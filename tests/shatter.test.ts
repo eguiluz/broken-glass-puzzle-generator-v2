@@ -1,0 +1,122 @@
+import { createHash } from 'node:crypto';
+import { describe, expect, it } from 'vitest';
+import { shatter, toSvg, type ShatterParams, type TabStyle } from '../src/lib/shatter';
+import { textRings } from '../src/lib/text';
+import { DEFAULTS, LEGACY, distanceToRings, inInk, loadFont, overlappingCuts, selfIntersecting } from './helpers';
+
+const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+const svgOf = (p: ShatterParams, frame = false) => toSvg(p, shatter(p), { strokeWidth: 0.1, frame });
+
+describe('reproducibility', () => {
+  // Hashes recorded from the original generator (before the newer settings existed), so
+  // shared links keep producing exactly the same puzzle.
+  it.each([
+    ['arrow', { concentration: 0.7, tabStyle: 'arrow' as TabStyle }, '8eeb08ff64af549c6a3bc6c11a6e1e78511272bddbf1971cbffc9aca2c566f64'],
+    ['classic mix', { concentration: 1, tabStyle: 'mixed-classic' as TabStyle }, '184dab5f2435094d0a2bfc725715bc30287f052151319addab19b27a89dab28c'],
+  ])('legacy %s links still give the original SVG', (_, extra, hash) => {
+    expect(sha(svgOf({ ...LEGACY, ...extra }))).toBe(hash);
+  });
+
+  it('gives the same SVG for the same parameters', () => {
+    expect(svgOf(DEFAULTS)).toBe(svgOf({ ...DEFAULTS }));
+  });
+
+  it('builds the requested number of pieces without text', () => {
+    expect(shatter(DEFAULTS).pieces).toHaveLength(DEFAULTS.pieces);
+  });
+});
+
+describe('geometry', () => {
+  const styles: TabStyle[] = ['barb', 'dovetail', 'arrow', 'mixed'];
+  const words = ['DAVID', 'MARÍA JOSÉ', 'Ñandú 8'];
+  const cases = styles.flatMap((tabStyle, i) =>
+    [1, 2, 3].map((seed) => ({
+      name: `${tabStyle} · seed ${seed}${seed === 3 ? ' · text' : ''}`,
+      p: {
+        ...DEFAULTS,
+        tabStyle,
+        seed: seed + i * 10,
+        coreSplit: seed,
+        tabWidth: seed === 2 ? 1.4 : 1,
+        tabWidthVariation: 1,
+        kerf: 0.2,
+        textRings: seed === 3 ? textRings(loadFont(), { text: words[i % words.length], size: 40, x: 0.5, y: 0.3 }, 300, 300) : [],
+      } satisfies ShatterParams,
+    })),
+  );
+
+  it.each(cases)('$name: no line is cut twice', ({ p }) => {
+    expect(overlappingCuts(shatter(p).cuts)).toBe(0);
+  });
+
+  it.each(cases)('$name: no piece outline crosses itself', ({ p }) => {
+    expect(selfIntersecting(shatter(p).pieces)).toBe(0);
+  });
+});
+
+describe('text', () => {
+  const rings = textRings(loadFont(), { text: 'DAVID', size: 50, x: 0.5, y: 0.3 }, 300, 300);
+  const r = shatter({ ...DEFAULTS, textRings: rings });
+
+  it('turns every letter into a piece, counters included', () => {
+    expect(r.letters.filter(Boolean)).toHaveLength(5);
+    // D, A and D have a counter.
+    expect(r.letters.filter((isLetter, i) => isLetter && r.holes[i].length > 0)).toHaveLength(3);
+  });
+
+  it('stops every crack at the letters', () => {
+    for (const pl of r.cuts)
+      for (let i = 1; i < pl.length; i++) {
+        const mid: [number, number] = [(pl[i - 1][0] + pl[i][0]) / 2, (pl[i - 1][1] + pl[i][1]) / 2];
+        if (distanceToRings(mid, rings) < 1e-6) continue; // the letter outline itself
+        expect(inInk(mid, rings)).toBe(false);
+      }
+  });
+
+  it('shrinks text that would not fit on the sheet', () => {
+    const wide = textRings(loadFont(), { text: 'CONSTANTINOPLA', size: 80, x: 0.5, y: 0.5 }, 300, 300);
+    const xs = wide.flat().map(([x]) => x);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(300);
+  });
+});
+
+describe('fragile spots', () => {
+  it('finds none in the default puzzle', () => {
+    expect(shatter(DEFAULTS).fragile).toHaveLength(0);
+  });
+
+  it('flags the thin glass bridges between small letters', () => {
+    const r = shatter({
+      ...DEFAULTS,
+      pieces: 500,
+      contrast: 0.9,
+      sliver: 1,
+      concentration: 0.95,
+      tabWidth: 0.5,
+      tabStyle: 'mixed',
+      textRings: textRings(loadFont(), { text: 'Lili', size: 14, x: 0.3, y: 0.2 }, 300, 300),
+    });
+    expect(r.fragile.length).toBeGreaterThan(0);
+    expect(Math.min(...r.fragile.map((f) => f.width))).toBeLessThan(DEFAULTS.minWidth!);
+  });
+
+  it('reports nothing when the check is off', () => {
+    expect(shatter({ ...DEFAULTS, minWidth: 0 }).fragile).toHaveLength(0);
+  });
+});
+
+describe('SVG export', () => {
+  it('cuts the outer frame last', () => {
+    const drawn = svgOf(DEFAULTS, true)
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('<path') || l.startsWith('<rect'));
+    expect(drawn.at(-1)).toMatch(/^<rect /);
+    expect(drawn.filter((l) => l.startsWith('<rect'))).toHaveLength(1);
+  });
+
+  it('leaves the frame out when asked', () => {
+    expect(svgOf(DEFAULTS, false)).not.toContain('<rect');
+  });
+});

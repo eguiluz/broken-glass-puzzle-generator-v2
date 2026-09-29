@@ -18,6 +18,12 @@ npm install
 npm run dev
 ```
 
+Tests (reproducibilidad de enlaces antiguos, sin cortes dobles, contornos válidos, texto y zonas frágiles):
+
+```sh
+npm test
+```
+
 ## Despliegue en GitHub Pages
 
 Se despliega automáticamente al crear un tag (`.github/workflows/deploy.yml`):
