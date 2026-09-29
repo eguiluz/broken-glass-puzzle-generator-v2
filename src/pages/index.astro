@@ -1,0 +1,539 @@
+---
+import '../styles/global.css';
+import Slider from '../components/Slider.astro';
+
+const sliders = [
+  { id: 'pieces', label: 'Piezas', min: 12, max: 800, step: 1, value: 280, unit: '', help: 'Número de piezas del puzzle. Si no caben en la plancha, verás cuántas se han podido generar.' },
+  { id: 'width', label: 'Ancho', min: 50, max: 800, step: 5, value: 300, unit: 'mm', help: 'Ancho de la plancha, en milímetros.' },
+  { id: 'height', label: 'Alto', min: 50, max: 800, step: 5, value: 300, unit: 'mm', help: 'Alto de la plancha, en milímetros.' },
+  { id: 'concentration', label: 'Concentración', min: 0, max: 100, step: 1, value: 75, unit: '%', help: 'Cuánto se reducen las piezas cerca del impacto. 0 % = todas del mismo tamaño.' },
+  { id: 'sliver', label: 'Astillas', min: 0, max: 100, step: 1, value: 70, unit: '%', help: 'Cuánto se alargan las piezas hacia el impacto, como astillas. 0 % = piezas casi cuadradas.' },
+  { id: 'core', label: 'Pieza central', min: 0, max: 80, step: 1, value: 30, unit: 'mm', help: 'Diámetro aproximado de la pieza del punto de impacto. 0 = sin pieza central.' },
+  { id: 'coreSplit', label: 'Trozos del centro', min: 1, max: 8, step: 1, value: 2, unit: '', help: 'En cuántas piezas queda la zona central: 1 = una sola pieza, 8 = sin fusionar. Solo con pieza central.' },
+  { id: 'chaos', label: 'Caos central', min: 0, max: 100, step: 1, value: 55, unit: '%', help: 'Irregularidad del centro: forma desigual, rayos que salen de varios puntos y primeros anillos desordenados.' },
+  { id: 'ringBreak', label: 'Anillos rotos', min: 0, max: 100, step: 1, value: 40, unit: '%', help: 'Cuánto se interrumpen las grietas concéntricas. 0 % = anillos completos.' },
+  { id: 'contrast', label: 'Contraste de tamaño', min: 0, max: 100, step: 1, value: 50, unit: '%', help: 'Diferencia de tamaño entre las piezas del impacto y las del borde. Más alto = astillas diminutas y piezas enormes.' },
+  { id: 'tab', label: 'Pestaña', min: 0, max: 12, step: 0.5, value: 5, unit: 'mm', help: 'Tamaño de las pestañas de encaje, en milímetros. 0 = sin pestañas.' },
+  { id: 'tabWidth', label: 'Ancho de pestaña', min: 40, max: 200, step: 5, value: 100, unit: '%', help: 'Anchura de las pestañas a lo largo de la arista. No cambia su profundidad.' },
+  { id: 'tabWidthVariation', label: 'Variación de ancho', min: 0, max: 100, step: 1, value: 40, unit: '%', help: 'Variación aleatoria del ancho de cada pestaña. 100 % ≈ de la mitad al doble.' },
+  { id: 'tabDensity', label: 'Densidad de pestañas', min: 0, max: 100, step: 1, value: 40, unit: '%', help: 'Proporción de aristas con pestaña. Aunque sea baja, cada pieza conserva al menos una.' },
+];
+const textSliders = [
+  { id: 'textSize', label: 'Tamaño del texto', min: 10, max: 150, step: 1, value: 50, unit: 'mm', help: 'Altura de las mayúsculas, en milímetros. Si el texto no cabe en la plancha, se reduce solo.' },
+  { id: 'textX', label: 'Posición horizontal', min: 0, max: 100, step: 1, value: 50, unit: '%', help: 'Dónde queda el centro del texto, de izquierda (0 %) a derecha (100 %).' },
+  { id: 'textY', label: 'Posición vertical', min: 0, max: 100, step: 1, value: 30, unit: '%', help: 'Dónde queda el centro del texto, de arriba (0 %) abajo (100 %).' },
+];
+const styles = [
+  { value: 'mixed', label: 'Mixta' },
+  { value: 'dovetail', label: 'Milano' },
+  { value: 'arrow', label: 'Flecha' },
+  { value: 'barb', label: 'Rayo' },
+];
+const base = import.meta.env.BASE_URL;
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cristal Roto · generador de puzzles</title>
+    <meta
+      name="description"
+      content="Genera puzzles de efecto cristal roto y expórtalos en SVG listo para corte láser."
+    />
+    <link rel="icon" type="image/svg+xml" href={`${base.replace(/\/?$/, '/')}favicon.svg`} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="text-sm">
+    <div class="mx-auto flex max-w-[1500px] flex-col gap-5 px-4 py-5 lg:grid lg:h-dvh lg:grid-cols-[1fr_360px] lg:grid-rows-[auto_minmax(0,1fr)] lg:gap-x-8 lg:gap-y-6 lg:px-8 lg:py-6">
+      <!-- Header -->
+      <header class="rise lg:col-span-2 flex flex-wrap items-end justify-between gap-3 border-b border-line pb-4">
+        <div>
+          <p class="text-[11px] uppercase tracking-[0.3em] text-laser">Generador · corte láser</p>
+          <h1 class="font-display text-4xl leading-none font-bold tracking-tight sm:text-5xl">
+            Cristal<span class="text-glass">/</span>Roto
+          </h1>
+        </div>
+        <p class="max-w-sm text-dim">
+          Haz clic sobre la plancha para elegir el punto de impacto. Cada grieta se exporta una sola vez: sin cortes dobles.
+        </p>
+      </header>
+
+      <!-- Stage -->
+      <main class="rise min-w-0 flex flex-col gap-3 lg:min-h-0" style="animation-delay: 80ms">
+        <div class="bed relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-line p-4 pb-8 sm:p-8 lg:aspect-auto lg:min-h-0 lg:flex-1">
+          <svg id="sheet" class="glow max-h-full max-w-full touch-none select-none cursor-crosshair" role="img" aria-label="Vista previa del puzzle">
+            <defs>
+              <linearGradient id="acrylic" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#1a2a33" />
+                <stop offset="0.55" stop-color="#101a20" />
+                <stop offset="1" stop-color="#16242c" />
+              </linearGradient>
+            </defs>
+            <rect id="plate" x="0" y="0" fill="url(#acrylic)" stroke="#8fe6ff" stroke-opacity="0.7" vector-effect="non-scaling-stroke" stroke-width="1.5"></rect>
+            <g class="pieces" id="pieces-g"></g>
+            <g id="fragile-g" pointer-events="none"></g>
+            <g id="impact" pointer-events="none">
+              <circle class="pulse" fill="none" stroke="#ff6a2b" vector-effect="non-scaling-stroke" stroke-width="1.5"></circle>
+              <circle class="pulse" fill="none" stroke="#ff6a2b" vector-effect="non-scaling-stroke" stroke-width="1.5"></circle>
+              <path id="cross" stroke="#ff6a2b" vector-effect="non-scaling-stroke" stroke-width="2"></path>
+            </g>
+          </svg>
+          <span id="dims" class="pointer-events-none absolute bottom-2 left-3 text-[11px] text-dim"></span>
+          <span id="fragile-note" class="fragile-note" hidden></span>
+          <span id="coords" class="pointer-events-none absolute right-3 bottom-2 text-[11px] text-laser"></span>
+          <!-- Magnifier: the cuts at their real kerf width, which is sub-pixel at sheet scale -->
+          <div id="loupe" class="loupe" hidden>
+            <svg id="loupe-svg" class="block size-full" aria-hidden="true">
+              <rect id="loupe-plate" x="0" y="0" fill="#4a7382"></rect>
+              <path id="loupe-cuts" fill="none" stroke="#020304" stroke-linejoin="round" stroke-linecap="round"></path>
+            </svg>
+            <span id="loupe-label" class="loupe-label"></span>
+          </div>
+        </div>
+
+        <dl class="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4">
+          <div class="bg-panel px-4 py-3">
+            <dt class="text-[11px] uppercase tracking-widest text-dim">Piezas</dt>
+            <dd id="stat-pieces" class="font-display text-2xl font-bold">–</dd>
+          </div>
+          <div class="bg-panel px-4 py-3">
+            <dt class="text-[11px] uppercase tracking-widest text-dim">Pestañas</dt>
+            <dd id="stat-tabs" class="font-display text-2xl font-bold">–</dd>
+          </div>
+          <div class="bg-panel px-4 py-3">
+            <dt class="text-[11px] uppercase tracking-widest text-dim">Longitud de corte</dt>
+            <dd id="stat-length" class="font-display text-2xl font-bold">–</dd>
+          </div>
+          <div class="bg-panel px-4 py-3">
+            <dt class="text-[11px] uppercase tracking-widest text-dim">Pieza media</dt>
+            <dd id="stat-avg" class="font-display text-2xl font-bold">–</dd>
+          </div>
+        </dl>
+      </main>
+
+      <!-- Controls -->
+      <aside class="sidebar-scroll rise min-w-0 flex flex-col gap-5 rounded-lg border border-line bg-panel p-5 lg:min-h-0 lg:overflow-y-auto" style="animation-delay: 160ms">
+        <section class="flex flex-col gap-4">
+          {sliders.map((s) => <Slider {...s} />)}
+        </section>
+
+        <section class="flex flex-col gap-4 border-t border-line pt-4">
+          <div class="field relative">
+            <span class="flex items-center gap-1.5">
+              <label for="text" class="text-[11px] uppercase tracking-widest text-dim">Texto</label>
+              <button type="button" class="help" aria-label="Ayuda: Texto" aria-describedby="text-help">?</button>
+            </span>
+            <input
+              id="text"
+              type="text"
+              maxlength="24"
+              placeholder="Ej.: DAVID"
+              autocomplete="off"
+              aria-describedby="text-help"
+              class="mt-1.5 w-full rounded border border-line bg-bed px-3 py-2 font-display text-lg font-bold tracking-wide placeholder:font-normal placeholder:text-dim/60 focus:border-glass focus:outline-none"
+            />
+            <span role="tooltip" id="text-help" class="tip">
+              Un nombre o una palabra. Cada letra se convierte en una pieza con su forma exacta, sin pestañas; las grietas
+              llegan hasta ella y el hueco de letras como la D o la A es su propia pieza.
+            </span>
+          </div>
+          {textSliders.map((s) => <Slider {...s} />)}
+        </section>
+
+        <fieldset class="flex flex-col gap-2">
+          <legend class="field relative mb-2 flex w-full items-center gap-1.5">
+            <span class="text-[11px] uppercase tracking-widest text-dim">Forma de pestaña</span>
+            <button type="button" class="help" aria-label="Ayuda: Forma de pestaña" aria-describedby="style-help">?</button>
+            <span role="tooltip" id="style-help" class="tip">Milano, Flecha y Rayo usan una sola forma. Mixta las reparte al azar entre las tres.</span>
+          </legend>
+          <div class="grid grid-cols-4 gap-1 rounded-md border border-line p-1" id="style-group">
+            {
+              styles.map((st, i) => (
+                <label class="cursor-pointer">
+                  <input type="radio" name="tabStyle" value={st.value} class="peer sr-only" checked={i === 0} />
+                  <span class="block rounded py-1.5 text-center text-dim transition peer-checked:bg-glass peer-checked:text-bed peer-focus-visible:ring-2 peer-focus-visible:ring-laser hover:text-ink">
+                    {st.label}
+                  </span>
+                </label>
+              ))
+            }
+          </div>
+        </fieldset>
+
+        <div class="flex items-center justify-between gap-3 border-t border-line pt-4">
+          <div>
+            <span class="text-[11px] uppercase tracking-widest text-dim">Semilla</span>
+            <p id="seed-out" class="font-display text-lg font-bold">–</p>
+          </div>
+          <button id="reshatter" class="rounded-md border border-glass/40 px-4 py-2 font-display font-bold text-glass transition hover:border-glass hover:bg-glass/10 active:scale-95">
+            ↻ Romper de nuevo
+          </button>
+        </div>
+
+        <div class="flex flex-col gap-3 border-t border-line pt-4">
+          <Slider
+            id="kerf"
+            label="Kerf del láser"
+            min={0}
+            max={0.5}
+            step={0.01}
+            value={0.15}
+            unit="mm"
+            help="Ancho que quema el láser. El hueco entre piezas siempre será este; las pestañas se ensanchan lo justo para seguir enganchando. Pasa el ratón por la plancha para verlo con la lupa."
+          />
+          <Slider
+            id="minWidth"
+            label="Grosor mínimo"
+            min={0}
+            max={5}
+            step={0.1}
+            value={2}
+            unit="mm"
+            help="Material más fino que aguanta tu plancha sin partirse (en acrílico de 3 mm, unos 2 mm). Las pestañas lo respetan, y las zonas que quedan más finas se marcan en rojo. 0 = no comprobar."
+          />
+          <label class="flex cursor-pointer items-center justify-between gap-3">
+            <span class="text-dim">Incluir marco exterior</span>
+            <input id="frame" type="checkbox" checked class="size-4 accent-[#ff6a2b]" />
+          </label>
+          <label class="flex items-center justify-between gap-3">
+            <span class="text-dim">Grosor de línea (mm)</span>
+            <input id="stroke" type="number" min="0.001" max="1" step="0.01" value="0.1" class="w-24 rounded border border-line bg-bed px-2 py-1 text-right focus:border-glass focus:outline-none" />
+          </label>
+        </div>
+
+        <div class="mt-auto flex flex-col gap-2">
+          <button id="export" class="rounded-md bg-laser px-4 py-3 font-display text-lg font-bold text-bed shadow-[0_0_30px_-8px_#ff6a2b] transition hover:brightness-110 active:scale-[0.98]">
+            Exportar SVG
+          </button>
+          <button id="share" class="rounded-md px-4 py-2 text-dim transition hover:text-ink">
+            Copiar enlace a esta configuración
+          </button>
+        </div>
+      </aside>
+    </div>
+
+    <script>
+      import opentype from 'opentype.js';
+      import fontUrl from '@fontsource/chakra-petch/files/chakra-petch-latin-700-normal.woff?url';
+      import { shatter, toSvg, pathD, type ShatterParams, type TabStyle } from '../lib/shatter';
+      import { textRings } from '../lib/text';
+
+      const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector(sel) as unknown as T;
+      const sheet = $<SVGSVGElement>('#sheet');
+      const piecesG = $<SVGGElement>("#pieces-g");
+      const plate = $<SVGRectElement>('#plate');
+      const impactG = $<SVGGElement>('#impact');
+
+      const ids = ['pieces', 'width', 'height', 'concentration', 'sliver', 'core', 'coreSplit', 'chaos', 'ringBreak', 'contrast', 'tab', 'tabWidth', 'tabWidthVariation', 'tabDensity', 'textSize', 'textX', 'textY', 'kerf', 'minWidth'] as const;
+      // Links made before a parameter existed must keep producing the same puzzle.
+      const legacyDefaults: Partial<Record<(typeof ids)[number], string>> = {
+        sliver: '0',
+        core: '0',
+        coreSplit: '8',
+        chaos: '0',
+        ringBreak: '0',
+        contrast: '0',
+        tabDensity: '100',
+        tabWidth: '100',
+        tabWidthVariation: '0',
+        kerf: '0',
+        minWidth: '0',
+      };
+      const inputs = Object.fromEntries(ids.map((id) => [id, $<HTMLInputElement>(`#${id}`)])) as Record<
+        (typeof ids)[number],
+        HTMLInputElement
+      >;
+
+      const textInput = $<HTMLInputElement>('#text');
+      // The glyph outlines come from the font file; until it loads the text is left out.
+      let font: opentype.Font | null = null;
+
+      const state = {
+        impact: [0.55, 0.6] as [number, number], // relative to the sheet
+        seed: Math.floor(Math.random() * 1e6),
+        style: 'barb' as TabStyle,
+      };
+
+      // ---- URL hash <-> state -------------------------------------------------
+      function readHash() {
+        const q = new URLSearchParams(location.hash.slice(1));
+        for (const id of ids) {
+          if (q.has(id)) inputs[id].value = q.get(id)!;
+          else if (q.has('seed') && legacyDefaults[id]) inputs[id].value = legacyDefaults[id];
+        }
+        textInput.value = q.get('text') ?? '';
+        if (q.has('seed')) state.seed = Number(q.get('seed')) || state.seed;
+        if (q.has('ix') && q.has('iy')) state.impact = [Number(q.get('ix')), Number(q.get('iy'))];
+        const st = q.get('style');
+        if (st === 'mixed' || st === 'mixed-classic' || st === 'dovetail' || st === 'arrow' || st === 'barb')
+          state.style = st;
+        // "Mixta" used to mean dovetail/arrow only; links from before the extra parameters keep that mix.
+        if (st === 'mixed' && q.has('seed') && !q.has('tabDensity')) state.style = 'mixed-classic';
+        const radio = state.style === 'mixed-classic' ? 'mixed' : state.style;
+        $<HTMLInputElement>(`input[name="tabStyle"][value="${radio}"]`).checked = true;
+      }
+      function writeHash() {
+        const q = new URLSearchParams();
+        for (const id of ids) q.set(id, inputs[id].value);
+        q.set('ix', state.impact[0].toFixed(4));
+        q.set('iy', state.impact[1].toFixed(4));
+        q.set('style', state.style);
+        q.set('seed', String(state.seed));
+        if (textInput.value.trim()) q.set('text', textInput.value);
+        history.replaceState(null, '', `#${q}`);
+      }
+
+      // ---- generation ---------------------------------------------------------
+      function params(): ShatterParams {
+        const width = Number(inputs.width.value);
+        const height = Number(inputs.height.value);
+        return {
+          width,
+          height,
+          pieces: Number(inputs.pieces.value),
+          impact: [state.impact[0] * width, state.impact[1] * height],
+          concentration: Number(inputs.concentration.value) / 100,
+          sliver: Number(inputs.sliver.value) / 100,
+          core: Number(inputs.core.value),
+          coreSplit: Number(inputs.coreSplit.value),
+          chaos: Number(inputs.chaos.value) / 100,
+          ringBreak: Number(inputs.ringBreak.value) / 100,
+          contrast: Number(inputs.contrast.value) / 100,
+          tabSize: Number(inputs.tab.value),
+          tabDensity: Number(inputs.tabDensity.value) / 100,
+          tabWidth: Number(inputs.tabWidth.value) / 100,
+          tabWidthVariation: Number(inputs.tabWidthVariation.value) / 100,
+          kerf: Number(inputs.kerf.value),
+          minWidth: Number(inputs.minWidth.value),
+          tabStyle: state.style,
+          seed: state.seed,
+          textRings: font
+            ? textRings(
+                font,
+                {
+                  text: textInput.value,
+                  size: Number(inputs.textSize.value),
+                  x: Number(inputs.textX.value) / 100,
+                  y: Number(inputs.textY.value) / 100,
+                },
+                width,
+                height,
+              )
+            : [],
+        };
+      }
+
+      let current: { p: ShatterParams; r: ReturnType<typeof shatter> } | null = null;
+
+      const loupe = $<HTMLDivElement>('#loupe');
+      const loupeSvg = $<SVGSVGElement>('#loupe-svg');
+      const loupeCuts = $<SVGPathElement>('#loupe-cuts');
+      const loupePlate = $<SVGRectElement>('#loupe-plate');
+      const LOUPE_ZOOM = 6;
+
+      function render() {
+        const p = params();
+        const r = shatter(p);
+        current = { p, r };
+        const { width: W, height: H } = p;
+
+        sheet.setAttribute('viewBox', `${-W * 0.01} ${-H * 0.01} ${W * 1.02} ${H * 1.02}`);
+        sheet.style.aspectRatio = `${W} / ${H}`;
+        sheet.style.width = W >= H ? '100%' : 'auto';
+        sheet.style.height = W >= H ? 'auto' : '100%';
+        plate.setAttribute('width', String(W));
+        plate.setAttribute('height', String(H));
+
+        const fragile = new Set(r.fragile.map((f) => f.piece));
+        piecesG.innerHTML = r.pieces
+          .map((pl, i) => {
+            const d = [pl, ...r.holes[i]].map((ring) => pathD(ring, true)).join('');
+            const cls = `piece${r.letters[i] ? ' letter' : ''}${fragile.has(i) ? ' fragile' : ''}`;
+            return `<path class="${cls}" d="${d}"/>`;
+          })
+          .join('');
+        // Rings around the thinnest spot of each fragile piece, sized to stay visible.
+        const ringR = Math.min(W, H) * 0.012;
+        $('#fragile-g').innerHTML = r.fragile
+          .map((f) => `<circle class="fragile-spot" cx="${f.at[0]}" cy="${f.at[1]}" r="${ringR}"><title>${f.width.toFixed(2)} mm</title></circle>`)
+          .join('');
+        const note = $('#fragile-note');
+        note.hidden = r.fragile.length === 0;
+        if (r.fragile.length) {
+          const thinnest = Math.min(...r.fragile.map((f) => f.width));
+          note.textContent = `⚠ ${r.fragile.length} ${r.fragile.length === 1 ? 'zona frágil' : 'zonas frágiles'} · la más fina, ${thinnest.toFixed(1)} mm`;
+        }
+
+        // Loupe content: every cut plus the frame, stroked at the real kerf width (in mm).
+        const kerf = p.kerf ?? 0;
+        loupeCuts.setAttribute('d', r.cuts.map((pl) => pathD(pl)).join('') + `M0 0H${W}V${H}H0Z`);
+        loupeCuts.setAttribute('stroke-width', String(kerf > 0 ? kerf : 1));
+        if (kerf > 0) loupeCuts.removeAttribute('vector-effect');
+        else loupeCuts.setAttribute('vector-effect', 'non-scaling-stroke');
+        loupePlate.setAttribute('width', String(W));
+        loupePlate.setAttribute('height', String(H));
+        $('#loupe-label').textContent = kerf > 0 ? `×${LOUPE_ZOOM} · kerf ${kerf} mm` : `×${LOUPE_ZOOM} · sin kerf`;
+
+        const [ix, iy] = p.impact;
+        const m = Math.min(W, H);
+        const c = m * 0.025;
+        impactG.querySelectorAll<SVGCircleElement>('.pulse').forEach((el) => {
+          el.setAttribute('cx', String(ix));
+          el.setAttribute('cy', String(iy));
+          el.style.setProperty('--pulse-r', `${m * 0.09}px`);
+        });
+        $('#cross').setAttribute('d', `M${ix - c} ${iy}H${ix + c}M${ix} ${iy - c}V${iy + c}`);
+
+        const asked = p.pieces;
+        // With text the count naturally differs from the request (letters, counters).
+        $('#stat-pieces').innerHTML =
+          r.pieces.length === asked || p.textRings?.length
+            ? String(r.pieces.length)
+            : `${r.pieces.length}<span class="ml-1 text-xs font-medium text-laser" title="Piezas demasiado pequeñas para este tamaño">/ ${asked}</span>`;
+        $('#stat-tabs').textContent = String(r.tabCount);
+        $('#stat-length').textContent = `${(r.cutLength / 1000).toFixed(2)} m`;
+        const avg = Math.sqrt((W * H) / r.pieces.length);
+        $('#stat-avg').textContent = `≈${avg.toFixed(0)} mm`;
+        $('#dims').textContent = `${W} × ${H} mm`;
+        $('#coords').textContent = `impacto ${ix.toFixed(0)}, ${iy.toFixed(0)} mm`;
+        $('#seed-out').textContent = `#${state.seed}`;
+        writeHash();
+      }
+
+      let queued = false;
+      function schedule() {
+        if (queued) return;
+        queued = true;
+        const run = () => {
+          queued = false;
+          render();
+        };
+        // Hidden tabs get no animation frames; don't leave e.g. a late font load waiting.
+        if (document.hidden) setTimeout(run, 0);
+        else requestAnimationFrame(run);
+      }
+
+      // ---- controls -----------------------------------------------------------
+      function syncSlider(el: HTMLInputElement) {
+        const pct = ((Number(el.value) - Number(el.min)) / (Number(el.max) - Number(el.min))) * 100;
+        el.style.setProperty('--pct', `${pct}%`);
+        $(`#${el.id}-out`).textContent = el.value;
+      }
+      for (const el of Object.values(inputs)) {
+        el.addEventListener('input', () => {
+          syncSlider(el);
+          schedule();
+        });
+      }
+      textInput.addEventListener('input', schedule);
+      document.querySelectorAll<HTMLInputElement>('input[name="tabStyle"]').forEach((el) =>
+        el.addEventListener('change', () => {
+          state.style = el.value as TabStyle;
+          schedule();
+        }),
+      );
+      $('#reshatter').addEventListener('click', () => {
+        state.seed = Math.floor(Math.random() * 1e6);
+        schedule();
+      });
+
+      // Impact point: click or drag on the sheet
+      function setImpactFromEvent(ev: PointerEvent) {
+        const ctm = sheet.getScreenCTM();
+        if (!ctm) return;
+        const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
+        const W = Number(inputs.width.value);
+        const H = Number(inputs.height.value);
+        const clamp = (v: number) => Math.min(0.995, Math.max(0.005, v));
+        state.impact = [clamp(pt.x / W), clamp(pt.y / H)];
+        schedule();
+      }
+      sheet.addEventListener('pointerdown', (ev) => {
+        sheet.setPointerCapture(ev.pointerId);
+        setImpactFromEvent(ev);
+      });
+      sheet.addEventListener('pointermove', (ev) => {
+        if (sheet.hasPointerCapture(ev.pointerId)) setImpactFromEvent(ev);
+        showLoupe(ev);
+      });
+      sheet.addEventListener('pointerleave', () => (loupe.hidden = true));
+
+      function showLoupe(ev: PointerEvent) {
+        const ctm = sheet.getScreenCTM();
+        if (!ctm) return;
+        const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
+        const W = Number(inputs.width.value);
+        const H = Number(inputs.height.value);
+        if (pt.x < 0 || pt.y < 0 || pt.x > W || pt.y > H) {
+          loupe.hidden = true;
+          return;
+        }
+        loupe.hidden = false;
+        const size = loupe.offsetWidth;
+        const span = size / (ctm.a * LOUPE_ZOOM);
+        loupeSvg.setAttribute('viewBox', `${pt.x - span / 2} ${pt.y - span / 2} ${span} ${span}`);
+        // Sit above-right of the cursor, flipping away from the edges of the bed.
+        const bed = loupe.parentElement!.getBoundingClientRect();
+        const gap = 22;
+        let x = ev.clientX - bed.left + gap;
+        let y = ev.clientY - bed.top - size - gap;
+        if (x + size > bed.width) x = ev.clientX - bed.left - size - gap;
+        if (y < 0) y = ev.clientY - bed.top + gap;
+        loupe.style.left = `${x}px`;
+        loupe.style.top = `${y}px`;
+      }
+
+      // ---- export -------------------------------------------------------------
+      $('#export').addEventListener('click', () => {
+        if (!current) return;
+        const strokeWidth = Math.max(0.001, Number($<HTMLInputElement>('#stroke').value) || 0.1);
+        const frame = $<HTMLInputElement>('#frame').checked;
+        const svg = toSvg(current.p, current.r, { strokeWidth, frame });
+        const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+        const a = document.createElement('a');
+        a.href = url;
+        const slug = textInput.value
+          .trim()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^A-Za-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '');
+        a.download = `cristal-roto_${slug ? `${slug}_` : ''}${current.p.width}x${current.p.height}_${current.r.pieces.length}p_${state.seed}.svg`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+
+      $('#share').addEventListener('click', async (ev) => {
+        const btn = ev.currentTarget as HTMLButtonElement;
+        try {
+          await navigator.clipboard.writeText(location.href);
+          btn.textContent = '✓ Enlace copiado';
+        } catch {
+          btn.textContent = 'Copia la URL de la barra de direcciones';
+        }
+        setTimeout(() => (btn.textContent = 'Copiar enlace a esta configuración'), 2000);
+      });
+
+      readHash();
+      Object.values(inputs).forEach(syncSlider);
+      render();
+      fetch(fontUrl)
+        .then((res) => res.arrayBuffer())
+        .then((buf) => {
+          font = opentype.parse(buf);
+          if (textInput.value.trim()) schedule();
+        })
+        .catch(() => {
+          textInput.disabled = true;
+          textInput.placeholder = 'No se pudo cargar la fuente';
+        });
+    </script>
+  </body>
+</html>

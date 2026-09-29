@@ -1,0 +1,28 @@
+---
+interface Props {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  unit: string;
+  help: string;
+}
+const { id, label, min, max, step, value, unit, help } = Astro.props;
+---
+
+<div class="field relative">
+  <span class="flex items-baseline justify-between">
+    <span class="flex items-center gap-1.5">
+      <label for={id} class="text-[11px] uppercase tracking-widest text-dim">{label}</label>
+      <button type="button" class="help" aria-label={`Ayuda: ${label}`} aria-describedby={`${id}-help`}>?</button>
+    </span>
+    <span class="font-display text-lg font-bold">
+      <output id={`${id}-out`} for={id}>{value}</output>
+      <span class="ml-0.5 text-xs font-medium text-dim">{unit}</span>
+    </span>
+  </span>
+  <input type="range" id={id} min={min} max={max} step={step} value={value} aria-describedby={`${id}-help`} />
+  <span role="tooltip" id={`${id}-help`} class="tip">{help}</span>
+</div>

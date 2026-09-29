@@ -1,0 +1,262 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-display: 'Chakra Petch', ui-sans-serif, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --color-bed: #0b0f12;
+  --color-panel: #12181d;
+  --color-line: #233039;
+  --color-ink: #dfe9ee;
+  --color-dim: #7d8f99;
+  --color-glass: #8fe6ff;
+  --color-laser: #ff6a2b;
+}
+
+html {
+  background: var(--color-bed);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100dvh;
+  background:
+    radial-gradient(1200px 600px at 70% -10%, rgb(143 230 255 / 0.07), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgb(255 106 43 / 0.06), transparent 60%),
+    var(--color-bed);
+}
+
+/* Honeycomb laser-bed texture behind the sheet */
+.bed {
+  background-color: #080b0d;
+  background-image:
+    radial-gradient(circle at center, rgb(255 255 255 / 0.05) 1px, transparent 1.6px),
+    radial-gradient(circle at center, rgb(255 255 255 / 0.05) 1px, transparent 1.6px);
+  background-size: 14px 24px;
+  background-position:
+    0 0,
+    7px 12px;
+}
+
+/* Sidebar: scrolls on its own so the sheet stays in view */
+.sidebar-scroll {
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+
+/* Help tooltips next to each control */
+.help {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--color-line);
+  border-radius: 50%;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--color-dim);
+  cursor: help;
+  transition: color 0.15s, border-color 0.15s;
+}
+.help:hover,
+.help:focus-visible {
+  color: var(--color-glass);
+  border-color: var(--color-glass);
+  outline: none;
+}
+.tip {
+  position: absolute;
+  top: calc(100% - 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  padding: 8px 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  background: var(--color-bed);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+  font-size: 11px;
+  line-height: 1.45;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-ink);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+}
+/* Shown on hover, keyboard focus or a tap on the "?" (a tap focuses the button). */
+.field:has(.help:hover, .help:focus) .tip {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+/* Kerf magnifier over the sheet */
+.loupe {
+  position: absolute;
+  z-index: 10;
+  width: 200px;
+  height: 200px;
+  overflow: hidden;
+  border: 1px solid var(--color-glass);
+  border-radius: 50%;
+  background: var(--color-bed);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.55), 0 0 0 4px rgb(143 230 255 / 0.08);
+  pointer-events: none;
+}
+.loupe-label {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgb(11 15 18 / 0.8);
+  font-size: 10px;
+  color: var(--color-dim);
+  white-space: nowrap;
+}
+
+/* Range sliders */
+input[type='range'] {
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+  --pct: 50%;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--color-glass) 0 var(--pct),
+    var(--color-line) var(--pct) 100%
+  );
+}
+input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-line);
+}
+input[type='range']::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-glass);
+}
+input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  margin-top: -8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  background: var(--color-bed);
+  border: 2px solid var(--color-glass);
+  transform: rotate(45deg);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--color-bed);
+  border: 2px solid var(--color-glass);
+  transform: rotate(45deg);
+}
+input[type='range']:focus-visible::-webkit-slider-thumb,
+input[type='range']:hover::-webkit-slider-thumb {
+  border-color: var(--color-laser);
+  box-shadow: 0 0 0 6px rgb(255 106 43 / 0.15);
+}
+input[type='range']:focus {
+  outline: none;
+}
+
+/* Preview */
+#sheet .piece {
+  fill: rgb(143 230 255 / 0.025);
+  stroke: var(--color-glass);
+  stroke-width: 1.15px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  transition: fill 0.12s;
+}
+#sheet .piece:hover {
+  fill: rgb(143 230 255 / 0.16);
+}
+#sheet .piece {
+  fill-rule: evenodd;
+}
+#sheet .piece.letter {
+  fill: rgb(255 106 43 / 0.22);
+  stroke: var(--color-laser);
+}
+#sheet .piece.letter:hover {
+  fill: rgb(255 106 43 / 0.38);
+}
+#sheet .piece.fragile {
+  fill: rgb(255 59 48 / 0.28);
+  stroke: #ff5a4f;
+}
+#sheet .fragile-spot {
+  fill: none;
+  stroke: #ff3b30;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+.fragile-note {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 10px;
+  border: 1px solid rgb(255 59 48 / 0.5);
+  border-radius: 999px;
+  background: rgb(11 15 18 / 0.85);
+  font-size: 11px;
+  color: #ff7a70;
+  white-space: nowrap;
+  pointer-events: none;
+}
+#sheet.glow .pieces {
+  filter: drop-shadow(0 0 2px rgb(143 230 255 / 0.55));
+}
+
+@keyframes pulse {
+  from {
+    r: 0;
+    opacity: 0.9;
+  }
+  to {
+    r: var(--pulse-r);
+    opacity: 0;
+  }
+}
+#impact .pulse {
+  animation: pulse 1.8s cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
+}
+#impact .pulse:nth-of-type(2) {
+  animation-delay: 0.9s;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+.rise {
+  animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #impact .pulse,
+  .rise {
+    animation: none;
+  }
+}
