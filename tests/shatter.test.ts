@@ -143,6 +143,34 @@ describe('sheet shapes', () => {
   });
 });
 
+describe('several impacts', () => {
+  const cases = [
+    { name: 'a weak second impact', extraImpacts: [{ at: [235, 215] as [number, number], strength: 0.4 }] },
+    { name: 'two equal impacts', extraImpacts: [{ at: [210, 150] as [number, number], strength: 1 }] },
+    {
+      name: 'three impacts on a heart',
+      shape: 'heart' as SheetShape,
+      extraImpacts: [
+        { at: [80, 90] as [number, number], strength: 0.5 },
+        { at: [230, 100] as [number, number], strength: 0.35 },
+      ],
+    },
+  ].map(({ name, ...extra }) => ({ name, r: shatter({ ...DEFAULTS, tabStyle: 'mixed', ...extra }) }));
+
+  it.each(cases)('$name: no line is cut twice and no outline crosses itself', ({ r }) => {
+    expect(overlappingCuts(r.cuts)).toBe(0);
+    expect(selfIntersecting(r.pieces)).toBe(0);
+  });
+
+  it.each(cases)('$name: about the requested number of pieces', ({ r }) => {
+    expect(Math.abs(r.pieces.length - DEFAULTS.pieces)).toBeLessThanOrEqual(0.05 * DEFAULTS.pieces);
+  });
+
+  it('gives the single-impact puzzle when the list is empty', () => {
+    expect(svgOf({ ...DEFAULTS, extraImpacts: [] })).toBe(svgOf(DEFAULTS));
+  });
+});
+
 describe('wavy cracks', () => {
   it('bends the cracks but keeps every crack junction in place', () => {
     const straight = shatter({ ...DEFAULTS, waviness: 0 });

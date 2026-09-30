@@ -2,7 +2,8 @@
 
 Generador web de puzzles con efecto **cristal roto**, listos para **corte láser**.
 
-- Clic (o arrastrar) sobre la plancha para colocar el punto de impacto.
+- Clic (o arrastrar) sobre la plancha para colocar el punto de impacto; Mayúsculas+clic añade hasta tres impactos más,
+  cada uno con su fuerza.
 - Sliders para número de piezas, ancho, alto, concentración de piezas en el impacto y tamaño de pestaña.
 - Pestañas de encaje tipo cola de milano, flecha o mezcla, con comprobación de colisiones.
 - Forma de la plancha: rectángulo, esquinas redondeadas, círculo (u óvalo) o corazón; el contorno es el marco.

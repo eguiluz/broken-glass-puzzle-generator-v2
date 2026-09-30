@@ -25,6 +25,8 @@ export interface ShatterParams {
   minWidth?: number; // mm — thinnest material the sheet can take; tabs respect it, thinner spots are reported
   waviness?: number; // 0..1 — how much the straight cracks bend into gentle waves (0 = straight)
   shape?: SheetShape; // outline of the sheet inside the width × height box (default: rectangle)
+  /** Further impacts besides `impact` (whose strength is 1); strength 0..1 sets their reach. */
+  extraImpacts?: { at: Pt; strength: number }[];
   cornerRadius?: number; // mm, for the rounded rectangle
   tabStyle: TabStyle;
   seed: number;
@@ -118,8 +120,60 @@ function polylineLength(pl: Pt[]) {
 // Seeds: a polar lattice around the impact whose spacing grows with distance.
 // Rays drift slightly and split when they get too far apart, like real cracks.
 
-/** Seeds; `inner` of them (right after the impact seed) surround the central piece. */
-function generateSeeds(p: ShatterParams, lambda: number, limit = Infinity): { pts: Pt[]; inner: number } {
+/** Seeds of all impacts, their central seeds first: `groups` lists each impact's centre. */
+interface Seeds {
+  pts: Pt[];
+  groups: number[][];
+}
+
+function generateSeeds(p: ShatterParams, lambda: number, limit = Infinity): Seeds {
+  const extra = p.extraImpacts ?? [];
+  if (!extra.length) {
+    const { pts, inner } = latticeSeeds(p, lambda, limit);
+    return { pts, groups: [Array.from({ length: inner + 1 }, (_, i) => i)] };
+  }
+  // Several impacts: each grows its own lattice, kept only inside its territory — where
+  // it is the nearest impact once distances are divided by strength. A weaker impact
+  // gets a roughly round patch inside the stronger one's, and the cracks of both meet
+  // along the border between them.
+  const impacts = [{ at: p.impact, strength: 1 }, ...extra.map((e) => ({ at: e.at, strength: Math.max(0.05, Math.min(1, e.strength)) }))];
+  const owner = (q: Pt) => {
+    let best = 0;
+    let bestD = Infinity;
+    impacts.forEach((imp, k) => {
+      const d = dist(q, imp.at) / imp.strength;
+      if (d < bestD) {
+        bestD = d;
+        best = k;
+      }
+    });
+    return best;
+  };
+  const centres: Pt[][] = [];
+  const rest: Pt[] = [];
+  impacts.forEach((imp, k) => {
+    const pk: ShatterParams = {
+      ...p,
+      impact: imp.at,
+      core: p.core * imp.strength,
+      seed: k === 0 ? p.seed : (p.seed ^ Math.imul(0x85ebca6b, k)) >>> 0,
+    };
+    const { pts, inner } = latticeSeeds(pk, lambda, limit);
+    centres.push(pts.slice(0, inner + 1));
+    for (const q of pts.slice(inner + 1)) if (owner(q) === k) rest.push(q);
+  });
+  const groups: number[][] = [];
+  const pts: Pt[] = [];
+  for (const c of centres) {
+    groups.push(c.map((_, i) => pts.length + i));
+    pts.push(...c);
+  }
+  pts.push(...rest);
+  return { pts, groups };
+}
+
+/** One impact's lattice; `inner` seeds (right after the impact seed) surround its centre. */
+function latticeSeeds(p: ShatterParams, lambda: number, limit = Infinity): { pts: Pt[]; inner: number } {
   const rng = mulberry32(p.seed);
   const { width: W, height: H } = p;
   const [cx, cy] = p.impact;
@@ -287,11 +341,13 @@ function generateSeeds(p: ShatterParams, lambda: number, limit = Infinity): { pt
   return { pts, inner: innerCount };
 }
 
-function seedsForCount(p: ShatterParams): { seeds: Pt[]; inner: number } {
-  // The inner seeds don't depend on the base size, so their count is known up front;
+function seedsForCount(p: ShatterParams): { seeds: Pt[]; groups: number[][] } {
+  // The central seeds don't depend on the base size, so their count is known up front;
   // ask for extra seeds to make up for the central cells that will be merged.
-  const inner = generateSeeds(p, 1, 1).inner;
-  const merges = Math.max(0, inner + 1 - Math.max(1, Math.round(p.coreSplit)));
+  const { groups } = generateSeeds(p, 1, 1);
+  const keep = Math.max(1, Math.round(p.coreSplit));
+  const merges = groups.reduce((acc, g) => acc + Math.max(0, g.length - keep), 0);
+  const fixed = groups.reduce((acc, g) => acc + g.length, 0);
   const target = Math.max(2, Math.round(p.pieces)) + merges;
   const limit = target * 4;
   let lo = Math.sqrt((p.width * p.height) / target) / 8;
@@ -312,13 +368,13 @@ function seedsForCount(p: ShatterParams): { seeds: Pt[]; inner: number } {
       hi = mid;
     }
   }
-  // Drop the surplus at random (never the impact or inner seeds) — the merged cells
-  // add some welcome irregularity.
+  // Drop the surplus at random (never the central seeds, which come first) — the merged
+  // cells add some welcome irregularity.
   const rng = mulberry32(p.seed ^ 0x9e3779b9);
   while (best.length > target) {
-    best.splice(1 + inner + Math.floor(rng() * (best.length - 1 - inner)), 1);
+    best.splice(fixed + Math.floor(rng() * (best.length - fixed)), 1);
   }
-  return { seeds: best, inner };
+  return { seeds: best, groups };
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +395,7 @@ function buildGraph(
   seeds: Pt[],
   W: number,
   H: number,
-  central: { inner: number; keep: number; rng: () => number },
+  central: { groups: number[][]; keep: number; rng: () => number },
   rings: Pt[][] = [],
   boundary?: Pt[],
 ) {
@@ -756,18 +812,42 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
 }
 
 /**
- * Fuse the impact cell and the cells of the inner seeds, picking random neighbouring
- * pairs, until `keep` pieces remain. Returns the indices of the fused cells.
+ * For each impact, fuse its impact cell and the cells of its inner seeds, picking random
+ * neighbouring pairs, until `keep` pieces remain. Returns the indices of the fused cells.
  */
 function mergeCentralCells(
   cells: number[][],
   cellSeed: number[],
-  { inner, keep, rng }: { inner: number; keep: number; rng: () => number },
+  { groups: seedGroups, keep, rng }: { groups: number[][]; keep: number; rng: () => number },
 ): Set<number> {
   const fused = new Set<number>();
-  const group = cells.map((_, ci) => ci).filter((ci) => cellSeed[ci] <= inner);
-  if (inner === 0 || group.length <= keep) return fused;
+  const drop = new Set<number>();
+  for (const seedGroup of seedGroups) {
+    const wanted = new Set(seedGroup);
+    const group = cells.map((_, ci) => ci).filter((ci) => wanted.has(cellSeed[ci]));
+    if (seedGroup.length <= 1 || group.length <= keep) continue;
+    fuseGroup(cells, group, keep, rng, fused, drop);
+  }
+  if (!drop.size) return fused;
+  // Remove the absorbed cells, remapping the fused indices.
+  const remap: number[] = [];
+  let n = 0;
+  for (let ci = 0; ci < cells.length; ci++) remap.push(drop.has(ci) ? -1 : n++);
+  const kept = cells.filter((_, ci) => !drop.has(ci));
+  cells.length = 0;
+  cells.push(...kept);
+  return new Set([...fused].map((ci) => remap[ci]));
+}
 
+/** Fuse one centre's cells in place; absorbed cells are added to `drop`. */
+function fuseGroup(
+  cells: number[][],
+  group: number[],
+  keep: number,
+  rng: () => number,
+  fused: Set<number>,
+  drop: Set<number>,
+) {
   const parent = new Map(group.map((ci) => [ci, ci]));
   const find = (i: number): number => (parent.get(i) === i ? i : find(parent.get(i)!));
   const owner = new Map<string, number[]>();
@@ -797,7 +877,6 @@ function mergeCentralCells(
     if (!sets.has(r)) sets.set(r, []);
     sets.get(r)!.push(ci);
   }
-  const drop = new Set<number>();
   for (const members of sets.values()) {
     if (members.length < 2) continue;
     // Outline of the union: directed edges whose reverse isn't in the set.
@@ -823,15 +902,6 @@ function mergeCentralCells(
     fused.add(members[0]);
     for (const ci of members.slice(1)) drop.add(ci);
   }
-  if (!drop.size) return fused;
-  // Remove the absorbed cells, remapping the fused indices.
-  const remap: number[] = [];
-  let n = 0;
-  for (let ci = 0; ci < cells.length; ci++) remap.push(drop.has(ci) ? -1 : n++);
-  const kept = cells.filter((_, ci) => !drop.has(ci));
-  cells.length = 0;
-  cells.push(...kept);
-  return new Set([...fused].map((ci) => remap[ci]));
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,18 +1185,19 @@ export function shatter(p: ShatterParams): ShatterResult {
 function shatterOnce(p: ShatterParams, sow: number): ShatterResult {
   const shaped = (p.shape ?? 'rect') !== 'rect';
   const outline = sheetOutline(p.shape ?? 'rect', p.width, p.height, p.cornerRadius ?? 0);
-  const { seeds: all, inner } = seedsForCount(shaped ? { ...p, pieces: sow } : p);
+  const { seeds: all, groups } = seedsForCount(shaped ? { ...p, pieces: sow } : p);
+  const fixed = groups.reduce((acc, g) => acc + g.length, 0);
   const rings = p.textRings ?? [];
   // Seeds inside the letters (or off the sheet) would only make cells that get swallowed.
   const seeds =
     rings.length || shaped
-      ? all.filter((q, i) => i <= inner || ((!rings.length || !inInk(q, rings)) && (!shaped || pointInPolygon(q, outline))))
+      ? all.filter((q, i) => i < fixed || ((!rings.length || !inInk(q, rings)) && (!shaped || pointInPolygon(q, outline))))
       : all;
   const graph = buildGraph(
     seeds,
     p.width,
     p.height,
-    { inner, keep: Math.max(1, Math.round(p.coreSplit)), rng: mulberry32(p.seed ^ 0x2c1b3c6d) },
+    { groups, keep: Math.max(1, Math.round(p.coreSplit)), rng: mulberry32(p.seed ^ 0x2c1b3c6d) },
     rings,
     shaped ? outline : undefined,
   );

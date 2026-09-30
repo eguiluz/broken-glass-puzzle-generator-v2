@@ -227,6 +227,60 @@ input[type='range']:focus {
   filter: drop-shadow(0 0 2px rgb(143 230 255 / 0.55));
 }
 
+/* Further impacts: dashed ring sized by strength, the selected one bright */
+#sheet .extra-impact circle {
+  fill: none;
+  stroke: var(--color-laser);
+  stroke-opacity: 0.55;
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+#sheet .extra-impact path {
+  stroke: var(--color-laser);
+  stroke-opacity: 0.6;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+#sheet .extra-impact text {
+  fill: var(--color-laser);
+  fill-opacity: 0.7;
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+#sheet .extra-impact.sel circle,
+#sheet .extra-impact.sel path,
+#sheet .extra-impact.sel text {
+  stroke-opacity: 1;
+  fill-opacity: 1;
+}
+#sheet .extra-impact.sel circle {
+  stroke-width: 2px;
+}
+#impact.dim {
+  opacity: 0.45;
+}
+.impact-chip {
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: var(--color-dim);
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.impact-chip:hover {
+  color: var(--color-ink);
+}
+.impact-chip.sel {
+  background: var(--color-glass);
+  border-color: var(--color-glass);
+  color: var(--color-bed);
+}
+.impact-chip.add {
+  border-style: dashed;
+  color: var(--color-laser);
+  border-color: rgb(255 106 43 / 0.5);
+}
+
 @keyframes pulse {
   from {
     r: 0;
