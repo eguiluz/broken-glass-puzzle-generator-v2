@@ -25,6 +25,8 @@ export interface ShatterParams {
   minWidth?: number; // mm — thinnest material the sheet can take; tabs respect it, thinner spots are reported
   waviness?: number; // 0..1 — how much the straight cracks bend into gentle waves (0 = straight)
   shape?: SheetShape; // outline of the sheet inside the width × height box (default: rectangle)
+  /** Further impacts besides `impact` (whose strength is 1); strength 0..1 sets their reach. */
+  extraImpacts?: { at: Pt; strength: number }[];
   cornerRadius?: number; // mm, for the rounded rectangle
   tabStyle: TabStyle;
   seed: number;
@@ -118,20 +120,251 @@ function polylineLength(pl: Pt[]) {
 // Seeds: a polar lattice around the impact whose spacing grows with distance.
 // Rays drift slightly and split when they get too far apart, like real cracks.
 
-/** Seeds; `inner` of them (right after the impact seed) surround the central piece. */
-function generateSeeds(p: ShatterParams, lambda: number, limit = Infinity): { pts: Pt[]; inner: number } {
+/**
+ * Seeds of all impacts: the main impact's central seeds come first (`groups`), and
+ * `layer` says which impact each seed belongs to (0 = the main one).
+ */
+interface Seeds {
+  pts: Pt[];
+  groups: number[][];
+  layer?: number[];
+  /** How many seeds at the front (every impact's centre) must never be dropped. */
+  fixed?: number;
+}
+
+function generateSeeds(p: ShatterParams, lambda: number, limit = Infinity): Seeds {
+  const main = latticeSeeds(p, lambda, limit);
+  const groups = [Array.from({ length: main.inner + 1 }, (_, i) => i)];
+  if (!p.extraImpacts?.length) return { pts: main.pts, groups };
+  // Several impacts: the main one shatters the whole sheet, and each further impact adds
+  // its own breakage on top, inside its reach — where it is the nearest impact once
+  // distances are divided by strength. Its cracks later stop at the first existing crack
+  // they meet, as a second blow's do (see secondaryCracks).
+  const impacts = impactList(p);
+  // Every impact's centre first (never dropped), then the rest of the seeds.
+  const head: Pt[] = main.pts.slice(0, main.inner + 1);
+  const headLayer = head.map(() => 0);
+  const tail: Pt[] = main.pts.slice(main.inner + 1);
+  const tailLayer = tail.map(() => 0);
+  impacts.forEach((imp, k) => {
+    if (k === 0) return;
+    const pk: ShatterParams = { ...p, impact: imp.at, core: p.core * imp.strength, seed: (p.seed ^ Math.imul(0x85ebca6b, k)) >>> 0 };
+    const lat = latticeSeeds(pk, lambda, limit, imp.strength);
+    lat.pts.forEach((q, i) => {
+      if (i <= lat.inner) {
+        head.push(q);
+        headLayer.push(k);
+      } else if (impactOwner(impacts, q) === k) {
+        tail.push(q);
+        tailLayer.push(k);
+      }
+    });
+  });
+  return { pts: [...head, ...tail], groups, layer: [...headLayer, ...tailLayer], fixed: head.length };
+}
+
+function impactList(p: ShatterParams) {
+  return [
+    { at: p.impact, strength: 1 },
+    ...(p.extraImpacts ?? []).map((e) => ({ at: e.at, strength: Math.max(0.05, Math.min(1, e.strength)) })),
+  ];
+}
+
+/** Impact whose reach a point falls in: the nearest once distances are divided by strength. */
+function impactOwner(impacts: { at: Pt; strength: number }[], q: Pt): number {
+  let best = 0;
+  let bestD = Infinity;
+  impacts.forEach((imp, k) => {
+    const d = dist(q, imp.at) / imp.strength;
+    if (d < bestD) {
+      bestD = d;
+      best = k;
+    }
+  });
+  return best;
+}
+
+/**
+ * The cracks of every further impact: the Voronoi edges of its own seeds that reach into
+ * its territory, kept whole. Cut across the main impact's cracks, the part of each that
+ * runs past the first crack it meets is left dangling and trimmed away, so the secondary
+ * breakage ends against the cracks that were already there instead of along a line.
+ */
+function secondaryCracks(
+  p: ShatterParams,
+  seeds: Pt[],
+  layer: number[],
+): { cracks: { seg: [Pt, Pt]; k: number }[]; centres: Pt[][] } {
+  const impacts = impactList(p);
+  const { width: W, height: H } = p;
+  const out: { seg: [Pt, Pt]; k: number }[] = [];
+  const centres: Pt[][] = [];
+  for (let k = 1; k < impacts.length; k++) {
+    const own = seeds.filter((_, i) => layer[i] === k);
+    if (own.length < 2) continue;
+    const voronoi = Delaunay.from(own).voronoi([-2, -2, W + 2, H + 2]);
+    // Its impact seed comes first: that cell is the piece the blow crushed out.
+    const centre = voronoi.cellPolygon(0);
+    if (centre) centres.push(centre.slice(0, -1) as Pt[]);
+    const seen = new Set<string>();
+    for (let i = 0; i < own.length; i++) {
+      const poly = voronoi.cellPolygon(i);
+      if (!poly) continue;
+      for (let j = 0; j + 1 < poly.length; j++) {
+        const a = poly[j] as Pt;
+        const b = poly[j + 1] as Pt;
+        const ka = `${a[0].toFixed(6)},${a[1].toFixed(6)}`;
+        const kb = `${b[0].toFixed(6)},${b[1].toFixed(6)}`;
+        const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const mid: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        if ([a, b, mid].some((q) => impactOwner(impacts, q) === k)) out.push({ seg: [a, b], k });
+      }
+    }
+  }
+  return { cracks: out, centres };
+}
+
+const CLEAR_REACH = 0.75; // main cracks vanish where another impact is this much nearer (by strength)
+const CRUMB_AREA = 12; // mm² — pieces this small against another impact's cracks are merged
+
+/**
+ * Trim further impacts' cracks against the main impact's graph: the part inside the
+ * impact's territory stays; a crack leaving it runs on only to the first main crack it
+ * meets (a hair past it, so the crossing is cut cleanly and the stub trimmed later).
+ */
+function trimSecondary(p: ShatterParams, raw: { seg: [Pt, Pt]; k: number }[], verts: Pt[], cells: number[][]): Pt[][] {
+  const impacts = impactList(p);
+  const owner = (q: Pt) => impactOwner(impacts, q);
+  // Main cracks, bucketed on a grid.
+  const CELL = 10;
+  const main: [Pt, Pt][] = [];
+  const seen = new Set<string>();
+  for (const c of cells)
+    for (let i = 0; i < c.length; i++) {
+      const u = c[i];
+      const v = c[(i + 1) % c.length];
+      const key = u < v ? `${u}-${v}` : `${v}-${u}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      main.push([verts[u], verts[v]]);
+    }
+  const grid = new Map<string, number[]>();
+  const cellsOf = (a: Pt, b: Pt) => {
+    const keys: string[] = [];
+    for (let x = Math.floor(Math.min(a[0], b[0]) / CELL); x <= Math.floor(Math.max(a[0], b[0]) / CELL); x++)
+      for (let y = Math.floor(Math.min(a[1], b[1]) / CELL); y <= Math.floor(Math.max(a[1], b[1]) / CELL); y++) keys.push(`${x},${y}`);
+    return keys;
+  };
+  main.forEach(([a, b], i) => {
+    for (const k of cellsOf(a, b)) {
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k)!.push(i);
+    }
+  });
+  const firstCrossing = (a: Pt, b: Pt, from: number) => {
+    let best = Infinity;
+    const cand = new Set<number>();
+    for (const k of cellsOf(a, b)) for (const i of grid.get(k) ?? []) cand.add(i);
+    const rx = b[0] - a[0];
+    const ry = b[1] - a[1];
+    for (const i of cand) {
+      const [q0, q1] = main[i];
+      const qx = q1[0] - q0[0];
+      const qy = q1[1] - q0[1];
+      const den = rx * qy - ry * qx;
+      if (Math.abs(den) < 1e-12) continue;
+      const wx = q0[0] - a[0];
+      const wy = q0[1] - a[1];
+      const t = (wx * qy - wy * qx) / den;
+      const u = (wx * ry - wy * rx) / den;
+      if (t > from && t <= 1 && u > 0 && u < 1) best = Math.min(best, t);
+    }
+    return best;
+  };
+  // Keep the part inside the sheet box, running 0.05 mm past its edge so the crossing with
+  // the border is cut and the stub outside is trimmed.
+  const { width: W, height: H } = p;
+  const clip = (a: Pt, b: Pt): [Pt, Pt] | null => {
+    const m = 0.05;
+    let t0 = 0;
+    let t1 = 1;
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    for (const [pq, qq] of [
+      [-dx, a[0] + m],
+      [dx, W + m - a[0]],
+      [-dy, a[1] + m],
+      [dy, H + m - a[1]],
+    ]) {
+      if (pq === 0) {
+        if (qq < 0) return null;
+        continue;
+      }
+      const r = qq / pq;
+      if (pq < 0) t0 = Math.max(t0, r);
+      else t1 = Math.min(t1, r);
+      if (t0 > t1) return null;
+    }
+    return [
+      [a[0] + t0 * dx, a[1] + t0 * dy],
+      [a[0] + t1 * dx, a[1] + t1 * dy],
+    ];
+  };
+  const kept: Pt[][] = [];
+  for (const { seg, k } of raw) {
+    const inA = owner(seg[0]) === k;
+    const inB = owner(seg[1]) === k;
+    if (inA && inB) {
+      kept.push(seg);
+      continue;
+    }
+    if (!inA && !inB) continue;
+    const [a, b] = inA ? seg : [seg[1], seg[0]];
+    // Where the crack leaves the territory.
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) / 2;
+      if (owner([a[0] + mid * (b[0] - a[0]), a[1] + mid * (b[1] - a[1])]) === k) lo = mid;
+      else hi = mid;
+    }
+    const t = firstCrossing(a, b, lo);
+    if (!Number.isFinite(t)) {
+      kept.push([a, b]);
+      continue;
+    }
+    const L = dist(a, b);
+    const end = Math.min(1, t + 0.05 / Math.max(L, 1e-9));
+    kept.push([a, [a[0] + end * (b[0] - a[0]), a[1] + end * (b[1] - a[1])]]);
+  }
+  return kept.map(([a, b]) => clip(a, b)).filter((s): s is [Pt, Pt] => !!s && dist(s[0], s[1]) > 1e-6);
+}
+
+/**
+ * One impact's lattice; `inner` seeds (right after the impact seed) surround its centre.
+ * `reach` (an impact's strength) stretches distances, so a weaker impact's pieces grow
+ * faster and match the neighbouring impact's at the border between them.
+ */
+function latticeSeeds(
+  p: ShatterParams,
+  lambda: number,
+  limit = Infinity,
+  reach = 1,
+): { pts: Pt[]; inner: number; size: (r: number) => number } {
   const rng = mulberry32(p.seed);
   const { width: W, height: H } = p;
   const [cx, cy] = p.impact;
   const diag = Math.hypot(W, H);
   const k = p.concentration * 9;
   const size = (r: number) => {
-    const linear = 1 + (k * r) / diag;
+    const linear = 1 + (k * (r / reach)) / diag;
     return lambda * (p.contrast > 0 ? Math.pow(linear, 1 + p.contrast) : linear);
   };
   // Ring spacing relative to ray spacing: ~1.25 gives squarish cells; larger values near
   // the impact turn them into long radial splinters, relaxing back with distance.
-  const ringStep = (r: number) => 1.25 + p.sliver * 5 * Math.exp(-r / (0.18 * diag));
+  const ringStep = (r: number) => 1.25 + p.sliver * 5 * Math.exp(-(r / reach) / (0.18 * diag));
 
   const rMax = Math.max(
     Math.hypot(cx, cy),
@@ -284,41 +517,48 @@ function generateSeeds(p: ShatterParams, lambda: number, limit = Infinity): { pt
     firstRing = false;
     r += s * ringStep(r);
   }
-  return { pts, inner: innerCount };
+  return { pts, inner: innerCount, size };
 }
 
-function seedsForCount(p: ShatterParams): { seeds: Pt[]; inner: number } {
-  // The inner seeds don't depend on the base size, so their count is known up front;
+function seedsForCount(p: ShatterParams): { seeds: Pt[]; groups: number[][]; layer?: number[]; fixed: number } {
+  // The central seeds don't depend on the base size, so their count is known up front;
   // ask for extra seeds to make up for the central cells that will be merged.
-  const inner = generateSeeds(p, 1, 1).inner;
-  const merges = Math.max(0, inner + 1 - Math.max(1, Math.round(p.coreSplit)));
+  const probe = generateSeeds(p, 1, 1);
+  const { groups } = probe;
+  const keep = Math.max(1, Math.round(p.coreSplit));
+  const merges = groups.reduce((acc, g) => acc + Math.max(0, g.length - keep), 0);
+  const fixed = probe.fixed ?? groups.reduce((acc, g) => acc + g.length, 0);
   const target = Math.max(2, Math.round(p.pieces)) + merges;
   const limit = target * 4;
   let lo = Math.sqrt((p.width * p.height) / target) / 8;
   let hi = Math.hypot(p.width, p.height);
-  let best = generateSeeds(p, lo, limit).pts;
+  let bestSet = generateSeeds(p, lo, limit);
   // Steep size contrast can need a much smaller base size than the initial guess.
-  while (best.length < target && lo > 0.05) {
+  while (bestSet.pts.length < target && lo > 0.05) {
     lo /= 2;
-    best = generateSeeds(p, lo, limit).pts;
+    bestSet = generateSeeds(p, lo, limit);
   }
   for (let i = 0; i < 30; i++) {
     const mid = Math.sqrt(lo * hi);
-    const pts = generateSeeds(p, mid, limit).pts;
-    if (pts.length >= target) {
+    const set = generateSeeds(p, mid, limit);
+    if (set.pts.length >= target) {
       lo = mid;
-      best = pts;
+      bestSet = set;
     } else {
       hi = mid;
     }
   }
-  // Drop the surplus at random (never the impact or inner seeds) — the merged cells
-  // add some welcome irregularity.
+  const best = bestSet.pts;
+  const layer = bestSet.layer;
+  // Drop the surplus at random (never the central seeds, which come first) — the merged
+  // cells add some welcome irregularity.
   const rng = mulberry32(p.seed ^ 0x9e3779b9);
   while (best.length > target) {
-    best.splice(1 + inner + Math.floor(rng() * (best.length - 1 - inner)), 1);
+    const i = fixed + Math.floor(rng() * (best.length - fixed));
+    best.splice(i, 1);
+    layer?.splice(i, 1);
   }
-  return { seeds: best, inner };
+  return { seeds: best, groups, layer, fixed };
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +571,10 @@ interface Edge {
   poly: Pt[];
   /** Part of a letter outline: never gets a tab, so the letters keep their exact shape. */
   letter?: boolean;
+  /** A letter outline, the sheet edge or a seam between impacts — not an ordinary crack. */
+  wall?: boolean;
+  /** Carries a tab. */
+  tab?: boolean;
 }
 
 const MIN_EDGE = 1.2; // mm — shorter interior edges get collapsed
@@ -339,9 +583,10 @@ function buildGraph(
   seeds: Pt[],
   W: number,
   H: number,
-  central: { inner: number; keep: number; rng: () => number },
+  central: { groups: number[][]; keep: number; rng: () => number },
   rings: Pt[][] = [],
   boundary?: Pt[],
+  wallsFor?: (verts: Pt[], cells: number[][]) => { walls: Pt[][]; clearAt: (q: Pt) => boolean },
 ) {
   // With a shaped sheet the diagram overshoots the box a little, so the sheet outline
   // always crosses the cracks cleanly instead of running along the box edge.
@@ -428,9 +673,11 @@ function buildGraph(
   let holes: number[][][] = cells.map(() => []);
   let ink: boolean[] = cells.map(() => false);
   let letterKeys = new Set<string>();
-  if (rings.length || boundary) {
-    const carved = carveText(verts, cells, rings, boundary);
-    ({ verts: V, cells, holes, ink, letterKeys } = carved);
+  let wallKeys = new Set<string>();
+  const { walls, clearAt } = wallsFor ? wallsFor(verts, cells) : { walls: [], clearAt: undefined };
+  if (rings.length || boundary || walls.length) {
+    const carved = carveText(verts, cells, rings, boundary, walls, clearAt);
+    ({ verts: V, cells, holes, ink, letterKeys, wallKeys } = carved);
     // Carved pieces can be concave: orient their tabs by winding, not by centroid.
     merged = new Set(cells.map((_, ci) => ci));
   }
@@ -445,6 +692,7 @@ function buildGraph(
       if (!e) {
         e = { a: Math.min(u, v), b: Math.max(u, v), cells: [], poly: [] };
         if (letterKeys.has(k)) e.letter = true;
+        if (wallKeys.has(k)) e.wall = true;
         edges.set(k, e);
       }
       e.cells.push(ci);
@@ -498,11 +746,27 @@ const FRAGMENT_SHARE = 0.3; // …as is any part of a cell cut down by a letter 
  * whatever lies outside the sheet is dropped, and slivers left against a letter or the
  * edge merge into a neighbour. Returns a fresh planar graph whose faces may have holes.
  */
-function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[]) {
+function carveText(
+  verts: Pt[],
+  cells: number[][],
+  rings: Pt[][],
+  boundary?: Pt[],
+  walls: Pt[][] = [],
+  clearAt: (q: Pt) => boolean = () => false,
+) {
   // 1. Split cracks, letter outlines and the sheet outline at their crossings. Each
   //    crossing point is computed once and shared by both lines, so the pieces meet exactly.
-  type Seg = { a: Pt; b: Pt; cuts: { t: number; p: Pt }[]; kind: 'crack' | 'letter' | 'edge' };
+  type Seg = { a: Pt; b: Pt; cuts: { t: number; p: Pt }[]; kind: 'crack' | 'letter' | 'edge' | 'seam'; border?: boolean };
   const segs: Seg[] = [];
+  // Edges of a single cell are the box border: never cleared, or the sheet would open up.
+  const uses = new Map<string, number>();
+  for (const c of cells)
+    for (let i = 0; i < c.length; i++) {
+      const u = c[i];
+      const v = c[(i + 1) % c.length];
+      const k = u < v ? `${u}-${v}` : `${v}-${u}`;
+      uses.set(k, (uses.get(k) ?? 0) + 1);
+    }
   const seen = new Set<string>();
   for (const c of cells) {
     for (let i = 0; i < c.length; i++) {
@@ -511,7 +775,7 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
       const k = u < v ? `${u}-${v}` : `${v}-${u}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      segs.push({ a: verts[u], b: verts[v], cuts: [], kind: 'crack' });
+      segs.push({ a: verts[u], b: verts[v], cuts: [], kind: 'crack', border: uses.get(k) === 1 });
     }
   }
   const cracks = segs.slice();
@@ -521,7 +785,10 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
   if (boundary)
     for (let i = 0; i < boundary.length; i++)
       edge.push({ a: boundary[i], b: boundary[(i + 1) % boundary.length], cuts: [], kind: 'edge' });
-  segs.push(...letters, ...edge);
+  // Seams between impact territories: open polylines, cut like any crack.
+  const seams: Seg[] = [];
+  for (const w of walls) for (let i = 1; i < w.length; i++) seams.push({ a: w[i - 1], b: w[i], cuts: [], kind: 'seam' });
+  segs.push(...letters, ...edge, ...seams);
   const inside = (q: Pt) => !boundary || pointInPolygon(q, boundary);
 
   const crossAll = (A: Seg[], B: Seg[]) => {
@@ -552,6 +819,11 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
   crossAll(cracks, letters);
   crossAll(cracks, edge);
   crossAll(letters, edge);
+  crossAll(cracks, seams);
+  crossAll(seams, letters);
+  crossAll(seams, edge);
+  // Cracks of two further impacts can cross each other too.
+  for (let i = 0; i < seams.length; i++) crossAll([seams[i]], seams.slice(i + 1));
 
   // 2. Planar graph of the pieces that survive: crack parts outside the ink, all outlines.
   const V: Pt[] = [];
@@ -569,8 +841,11 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
   const ek = (u: number, v: number) => (u < v ? `${u}-${v}` : `${v}-${u}`);
   const adj = new Map<number, Set<number>>();
   const letterKeys = new Set<string>();
-  // Letter outlines and the sheet edge: slivers against either get merged.
+  // Letter outlines and the sheet edge: slivers against either get merged. Further impacts'
+  // cracks are walls too (never dropped to mend a fragile piece), but their small pieces
+  // are the point, not slivers.
   const wallKeys = new Set<string>();
+  const sliverWalls = new Set<string>();
   const link = (u: number, v: number) => {
     if (!adj.has(u)) adj.set(u, new Set());
     if (!adj.has(v)) adj.set(v, new Set());
@@ -584,7 +859,8 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
       const b = pts[i + 1].p;
       if (dist(a, b) < 1e-9) continue;
       const mid: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      if (s.kind === 'crack' && (inInk(mid, rings) || !inside(mid))) continue;
+      if ((s.kind === 'crack' || s.kind === 'seam') && (inInk(mid, rings) || !inside(mid))) continue;
+      if (s.kind === 'crack' && !s.border && clearAt(mid)) continue;
       if (s.kind === 'letter' && !inside(mid)) continue;
       const u = vid(a);
       const v = vid(b);
@@ -592,6 +868,7 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
       link(u, v);
       if (s.kind === 'letter') letterKeys.add(ek(u, v));
       if (s.kind !== 'crack') wallKeys.add(ek(u, v));
+      if (s.kind === 'letter' || s.kind === 'edge') sliverWalls.add(ek(u, v));
     }
   }
 
@@ -699,11 +976,13 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
       const area = Math.abs(f.areas[f.bounded[k]]);
       const shared = new Map<number, { len: number; keys: string[] }>();
       let againstLetter = false;
+      let againstSeam = false;
       for (let i = 0; i < c.length; i++) {
         const u = c[i];
         const v = c[(i + 1) % c.length];
         if (wallKeys.has(ek(u, v))) {
-          againstLetter = true;
+          if (sliverWalls.has(ek(u, v))) againstLetter = true;
+          else againstSeam = true;
           continue;
         }
         const g = faceOf.get(`${v}>${u}`);
@@ -713,8 +992,10 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
         entry.keys.push(ek(u, v));
         shared.set(g, entry);
       }
-      if (!againstLetter || !shared.size) continue;
-      if (area >= FRAGMENT_AREA) {
+      if ((!againstLetter && !againstSeam) || !shared.size) continue;
+      // Against another impact's cracks only crumbs go; its small pieces are the point.
+      if (!againstLetter && area >= CRUMB_AREA) continue;
+      if (againstLetter && area >= FRAGMENT_AREA) {
         const home = origCellOf(f.samples[k]);
         if (home < 0 || area >= FRAGMENT_SHARE * origAreas[home]) continue;
       }
@@ -752,22 +1033,47 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[
     holes: f.holesOf.map((hs) => hs.map((hi) => f.cycles[hi])).filter((_, k) => keep[k]),
     ink: f.inkOf.filter((_, k) => keep[k]),
     letterKeys,
+    wallKeys,
   };
 }
 
 /**
- * Fuse the impact cell and the cells of the inner seeds, picking random neighbouring
- * pairs, until `keep` pieces remain. Returns the indices of the fused cells.
+ * For each impact, fuse its impact cell and the cells of its inner seeds, picking random
+ * neighbouring pairs, until `keep` pieces remain. Returns the indices of the fused cells.
  */
 function mergeCentralCells(
   cells: number[][],
   cellSeed: number[],
-  { inner, keep, rng }: { inner: number; keep: number; rng: () => number },
+  { groups: seedGroups, keep, rng }: { groups: number[][]; keep: number; rng: () => number },
 ): Set<number> {
   const fused = new Set<number>();
-  const group = cells.map((_, ci) => ci).filter((ci) => cellSeed[ci] <= inner);
-  if (inner === 0 || group.length <= keep) return fused;
+  const drop = new Set<number>();
+  for (const seedGroup of seedGroups) {
+    const wanted = new Set(seedGroup);
+    const group = cells.map((_, ci) => ci).filter((ci) => wanted.has(cellSeed[ci]));
+    if (seedGroup.length <= 1 || group.length <= keep) continue;
+    fuseGroup(cells, group, keep, rng, fused, drop);
+  }
+  if (!drop.size) return fused;
+  // Remove the absorbed cells, remapping the fused indices.
+  const remap: number[] = [];
+  let n = 0;
+  for (let ci = 0; ci < cells.length; ci++) remap.push(drop.has(ci) ? -1 : n++);
+  const kept = cells.filter((_, ci) => !drop.has(ci));
+  cells.length = 0;
+  cells.push(...kept);
+  return new Set([...fused].map((ci) => remap[ci]));
+}
 
+/** Fuse one centre's cells in place; absorbed cells are added to `drop`. */
+function fuseGroup(
+  cells: number[][],
+  group: number[],
+  keep: number,
+  rng: () => number,
+  fused: Set<number>,
+  drop: Set<number>,
+) {
   const parent = new Map(group.map((ci) => [ci, ci]));
   const find = (i: number): number => (parent.get(i) === i ? i : find(parent.get(i)!));
   const owner = new Map<string, number[]>();
@@ -797,7 +1103,6 @@ function mergeCentralCells(
     if (!sets.has(r)) sets.set(r, []);
     sets.get(r)!.push(ci);
   }
-  const drop = new Set<number>();
   for (const members of sets.values()) {
     if (members.length < 2) continue;
     // Outline of the union: directed edges whose reverse isn't in the set.
@@ -823,15 +1128,6 @@ function mergeCentralCells(
     fused.add(members[0]);
     for (const ci of members.slice(1)) drop.add(ci);
   }
-  if (!drop.size) return fused;
-  // Remove the absorbed cells, remapping the fused indices.
-  const remap: number[] = [];
-  let n = 0;
-  for (let ci = 0; ci < cells.length; ci++) remap.push(drop.has(ci) ? -1 : n++);
-  const kept = cells.filter((_, ci) => !drop.has(ci));
-  cells.length = 0;
-  cells.push(...kept);
-  return new Set([...fused].map((ci) => remap[ci]));
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,6 +1313,7 @@ function addTabs(
         if (!ok) continue;
 
         e.poly = [A, ...world, B];
+        e.tab = true;
         intrusions[tgt].push(...segs);
         tabsPerCell[tgt]++;
         tabsPerCell[src]++;
@@ -1099,10 +1396,12 @@ function chain(polys: Pt[][]): Pt[][] {
 // ---------------------------------------------------------------------------
 
 export function shatter(p: ShatterParams): ShatterResult {
-  if ((p.shape ?? 'rect') === 'rect') return shatterOnce(p, p.pieces);
-  // A shaped sheet loses the corners of the box: sow seeds in proportion to its area, then
-  // correct once if merges along the edge left the count noticeably off.
-  const outline = sheetOutline(p.shape!, p.width, p.height, p.cornerRadius ?? 0);
+  const shaped = (p.shape ?? 'rect') !== 'rect';
+  if (!shaped && !p.extraImpacts?.length) return shatterOnce(p, p.pieces);
+  // A shaped sheet loses the corners of the box: sow seeds in proportion to its area.
+  // Further impacts add pieces where their cracks cross the main ones. Either way, correct
+  // once if the count came out noticeably off.
+  const outline = sheetOutline(p.shape ?? 'rect', p.width, p.height, p.cornerRadius ?? 0);
   const sow = Math.round(p.pieces / (Math.abs(signedArea(outline)) / (p.width * p.height)));
   const first = shatterOnce(p, sow);
   const got = first.pieces.length;
@@ -1115,20 +1414,36 @@ export function shatter(p: ShatterParams): ShatterResult {
 function shatterOnce(p: ShatterParams, sow: number): ShatterResult {
   const shaped = (p.shape ?? 'rect') !== 'rect';
   const outline = sheetOutline(p.shape ?? 'rect', p.width, p.height, p.cornerRadius ?? 0);
-  const { seeds: all, inner } = seedsForCount(shaped ? { ...p, pieces: sow } : p);
+  const { seeds: sown, groups, layer: sownLayer, fixed } = seedsForCount(sow === p.pieces ? p : { ...p, pieces: sow });
   const rings = p.textRings ?? [];
   // Seeds inside the letters (or off the sheet) would only make cells that get swallowed.
-  const seeds =
-    rings.length || shaped
-      ? all.filter((q, i) => i <= inner || ((!rings.length || !inInk(q, rings)) && (!shaped || pointInPolygon(q, outline))))
-      : all;
+  const keepSeed = sown.map(
+    (q, i) => i < fixed || ((!rings.length || !inInk(q, rings)) && (!shaped || pointInPolygon(q, outline))),
+  );
+  const all = sown.filter((_, i) => keepSeed[i]);
+  const layer = sownLayer?.filter((_, i) => keepSeed[i]);
+  // The main impact's seeds build the crack graph; further impacts cut theirs across it.
+  const seeds = layer ? all.filter((_, i) => layer[i] === 0) : all;
   const graph = buildGraph(
     seeds,
     p.width,
     p.height,
-    { inner, keep: Math.max(1, Math.round(p.coreSplit)), rng: mulberry32(p.seed ^ 0x2c1b3c6d) },
+    { groups, keep: Math.max(1, Math.round(p.coreSplit)), rng: mulberry32(p.seed ^ 0x2c1b3c6d) },
     rings,
     shaped ? outline : undefined,
+    layer
+      ? (verts, cells) => {
+          const { cracks, centres } = secondaryCracks(p, all, layer);
+          // Where a further impact clearly dominates, its own breakage replaces the main
+          // one's: keeping both would chop its small pieces into crumbs. Main cracks only
+          // run on near the edge of its reach, where the two breakages meet.
+          const impacts = impactList(p);
+          const clearAt = (q: Pt) =>
+            centres.some((z) => pointInPolygon(q, z)) ||
+            impacts.some((imp, k) => k > 0 && dist(q, imp.at) / imp.strength < CLEAR_REACH * dist(q, impacts[0].at));
+          return { walls: trimSecondary(p, cracks, verts, cells), clearAt };
+        }
+      : undefined,
   );
   const tabCount = addTabs(p, graph, mulberry32(p.seed ^ 0x51ed270b));
   const straight = waveEdges(p, graph);
@@ -1173,6 +1488,17 @@ function shatterOnce(p: ShatterParams, sow: number): ShatterResult {
     holes = graph.holes.map((hs) => hs.map(trace));
     fragile = findFragile(pieces, holes, kerf, minWidth);
   }
+  // A thin wedge left where a crack meets a wall (a seam, the sheet edge) at a shallow angle:
+  // drop that crack, merging the wedge into the piece on its other side.
+  let dropped = 0;
+  for (let round = 0; round < 12 && fragile.length; round++) {
+    const m = mergeFragile(graph, fragile, kerf);
+    if (!m.merged) break;
+    dropped += m.tabsLost;
+    pieces = graph.cells.map(trace);
+    holes = graph.holes.map((hs) => hs.map(trace));
+    fragile = findFragile(pieces, holes, kerf, minWidth);
+  }
 
   const interior = [...graph.edges.values()].filter((e) => e.cells.length === 2).map((e) => e.poly);
   const cuts = chain(interior);
@@ -1180,7 +1506,7 @@ function shatterOnce(p: ShatterParams, sow: number): ShatterResult {
     cuts.reduce((acc, pl) => acc + polylineLength(pl), 0) +
     (shaped ? polylineLength([...outline, outline[0]]) : 2 * (p.width + p.height));
 
-  return { cuts, pieces, holes, letters: graph.ink, outline, fragile, tabCount, cutLength };
+  return { cuts, pieces, holes, letters: graph.ink, outline, fragile, tabCount: tabCount - dropped, cutLength };
 }
 
 // ---------------------------------------------------------------------------
@@ -1294,6 +1620,78 @@ function waveEdges(p: ShatterParams, graph: ReturnType<typeof buildGraph>): Map<
     e.poly = next;
   });
   return straight;
+}
+
+/**
+ * Merge the first fragile piece whose thin spot is formed by an ordinary crack with the
+ * piece across that crack, and say how many tabs went away with the removed crack.
+ */
+function mergeFragile(
+  graph: ReturnType<typeof buildGraph>,
+  fragile: Fragile[],
+  kerf: number,
+): { merged: boolean; tabsLost: number } {
+  const key = (u: number, v: number) => (u < v ? `${u}-${v}` : `${v}-${u}`);
+  const segDist = (q: Pt, pl: Pt[]) => {
+    let m = Infinity;
+    for (let i = 1; i < pl.length; i++) m = Math.min(m, pointSegDist(q, pl[i - 1], pl[i]));
+    return m;
+  };
+  let tabsLost = 0;
+  for (const f of fragile) {
+    const a = f.piece;
+    if (graph.ink[a] || a >= graph.cells.length) continue;
+    const loop = graph.cells[a];
+    // The crack closest to the thin spot, if it is one side of it.
+    let best: Edge | null = null;
+    let bestD = f.width / 2 + kerf / 2 + 0.5;
+    for (let i = 0; i < loop.length; i++) {
+      const e = graph.edges.get(key(loop[i], loop[(i + 1) % loop.length]))!;
+      if (e.cells.length !== 2 || e.letter || e.wall) continue;
+      const d = segDist(f.at, e.poly);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    if (!best) continue;
+    const b = best.cells[0] === a ? best.cells[1] : best.cells[0];
+    if (graph.ink[b]) continue;
+    // Outline of the union: directed edges of both loops whose reverse isn't among them.
+    const directed = new Set<string>();
+    for (const c of [graph.cells[a], graph.cells[b]])
+      for (let i = 0; i < c.length; i++) directed.add(`${c[i]}>${c[(i + 1) % c.length]}`);
+    const next = new Map<number, number>();
+    const shared: string[] = [];
+    let pinched = false;
+    for (const d of directed) {
+      const [u, v] = d.split('>').map(Number);
+      if (directed.has(`${v}>${u}`)) {
+        if (u < v) shared.push(key(u, v));
+        continue;
+      }
+      if (next.has(u)) pinched = true;
+      next.set(u, v);
+    }
+    const start = next.keys().next().value;
+    if (pinched || start === undefined) continue;
+    const union: number[] = [start];
+    for (let v = next.get(start)!; v !== start && union.length <= next.size; v = next.get(v)!) union.push(v);
+    if (union.length !== next.size) continue;
+
+    for (const k of shared) {
+      if (graph.edges.get(k)?.tab) tabsLost++;
+      graph.edges.delete(k);
+    }
+    graph.cells[a] = union;
+    graph.holes[a] = [...graph.holes[a], ...graph.holes[b]];
+    graph.cells.splice(b, 1);
+    graph.holes.splice(b, 1);
+    graph.ink.splice(b, 1);
+    for (const e of graph.edges.values()) e.cells = e.cells.map((c) => (c === b ? a : c)).map((c) => (c > b ? c - 1 : c));
+    return { merged: true, tabsLost };
+  }
+  return { merged: false, tabsLost: 0 };
 }
 
 // ---------------------------------------------------------------------------

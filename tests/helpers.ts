@@ -128,6 +128,36 @@ function overlap([a0, a1]: [Pt, Pt], [b0, b1]: [Pt, Pt]): boolean {
   return hi - lo > 0.05;
 }
 
+/**
+ * Cut lines that stop in mid-air: points touched by a single cut segment, away from the
+ * sheet outline. A cut there would not separate anything.
+ */
+export function looseEnds(cuts: Pt[][], outline: Pt[]): number {
+  const key = (q: Pt) => `${q[0].toFixed(4)},${q[1].toFixed(4)}`;
+  const deg = new Map<string, { n: number; q: Pt }>();
+  for (const pl of cuts)
+    for (let i = 1; i < pl.length; i++)
+      for (const q of [pl[i - 1], pl[i]]) {
+        const d = deg.get(key(q)) ?? { n: 0, q };
+        d.n++;
+        deg.set(key(q), d);
+      }
+  let loose = 0;
+  for (const { n, q } of deg.values()) if (n === 1 && distanceToRings(q, [outline]) > 1e-3) loose++;
+  return loose;
+}
+
+/** Area of a closed outline. */
+export function areaOf(pl: Pt[]): number {
+  let a = 0;
+  for (let i = 0; i < pl.length; i++) {
+    const [x0, y0] = pl[i];
+    const [x1, y1] = pl[(i + 1) % pl.length];
+    a += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(a / 2);
+}
+
 /** Even-odd point-in-ink test against glyph rings. */
 export function inInk(p: Pt, rings: Pt[][]): boolean {
   let inside = false;

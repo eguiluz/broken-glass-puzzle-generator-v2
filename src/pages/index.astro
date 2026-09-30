@@ -86,6 +86,7 @@ const base = import.meta.env.BASE_URL;
             <path id="plate" fill="url(#acrylic)" stroke="#8fe6ff" stroke-opacity="0.7" vector-effect="non-scaling-stroke" stroke-width="1.5"></path>
             <g class="pieces" id="pieces-g"></g>
             <g id="fragile-g" pointer-events="none"></g>
+            <g id="extra-impacts" pointer-events="none"></g>
             <g id="impact" pointer-events="none">
               <circle class="pulse" fill="none" stroke="#ff6a2b" vector-effect="non-scaling-stroke" stroke-width="1.5"></circle>
               <circle class="pulse" fill="none" stroke="#ff6a2b" vector-effect="non-scaling-stroke" stroke-width="1.5"></circle>
@@ -158,6 +159,33 @@ const base = import.meta.env.BASE_URL;
               unit="mm"
               help="Radio de las esquinas redondeadas. Se limita a la mitad del lado más corto."
             />
+          </div>
+        </fieldset>
+
+        <fieldset class="flex flex-col gap-2">
+          <legend class="field relative mb-2 flex w-full items-center gap-1.5">
+            <span class="text-[11px] uppercase tracking-widest text-dim">Impactos</span>
+            <button type="button" class="help" aria-label="Ayuda: Impactos" aria-describedby="impacts-help">?</button>
+            <span role="tooltip" id="impacts-help" class="tip">
+              Clic en la plancha: mueve el impacto seleccionado. Mayúsculas+clic: añade otro. Arrastra un marcador para moverlo y haz
+              doble clic en un secundario para quitarlo. La fuerza decide hasta dónde llega su rotura.
+            </span>
+          </legend>
+          <div id="impact-chips" class="flex flex-wrap gap-1"></div>
+          <div id="strength-field" class="flex flex-col gap-2" hidden>
+            <Slider
+              id="strength"
+              label="Fuerza"
+              min={10}
+              max={100}
+              step={1}
+              value={40}
+              unit="%"
+              help="Cuánto se extiende la rotura de este impacto frente a la del principal (que siempre es 100 %)."
+            />
+            <button id="remove-impact" type="button" class="self-start text-[11px] text-dim transition hover:text-laser">
+              Quitar este impacto
+            </button>
           </div>
         </fieldset>
 
@@ -272,6 +300,8 @@ const base = import.meta.env.BASE_URL;
       const piecesG = $<SVGGElement>("#pieces-g");
       const plate = $<SVGPathElement>('#plate');
       const impactG = $<SVGGElement>('#impact');
+      const MAX_EXTRA = 3;
+      let selected = 0; // 0 = main impact, k = state.extra[k - 1]
 
       const ids = ['pieces', 'width', 'height', 'concentration', 'sliver', 'core', 'coreSplit', 'chaos', 'ringBreak', 'waviness', 'contrast', 'tab', 'tabWidth', 'tabWidthVariation', 'tabDensity', 'textSize', 'textX', 'textY', 'kerf', 'minWidth', 'corner'] as const;
       // Links made before a parameter existed must keep producing the same puzzle.
@@ -303,6 +333,8 @@ const base = import.meta.env.BASE_URL;
         seed: Math.floor(Math.random() * 1e6),
         style: 'barb' as TabStyle,
         shape: 'rect' as SheetShape,
+        // Further impacts, relative to the sheet, with their strength (the main one is 1).
+        extra: [] as { at: [number, number]; s: number }[],
       };
 
       // ---- URL hash <-> state -------------------------------------------------
@@ -315,6 +347,13 @@ const base = import.meta.env.BASE_URL;
         textInput.value = q.get('text') ?? '';
         if (q.has('seed')) state.seed = Number(q.get('seed')) || state.seed;
         if (q.has('ix') && q.has('iy')) state.impact = [Number(q.get('ix')), Number(q.get('iy'))];
+        state.extra = (q.get('imp') ?? '')
+          .split(';')
+          .map((t) => t.split(',').map(Number))
+          .filter((v) => v.length === 3 && v.every(Number.isFinite))
+          .slice(0, MAX_EXTRA)
+          .map(([x, y, st]) => ({ at: [x, y] as [number, number], s: Math.min(1, Math.max(0.1, st)) }));
+        selected = 0;
         const st = q.get('style');
         if (st === 'mixed' || st === 'mixed-classic' || st === 'dovetail' || st === 'arrow' || st === 'barb')
           state.style = st;
@@ -332,6 +371,8 @@ const base = import.meta.env.BASE_URL;
         for (const id of ids) q.set(id, inputs[id].value);
         q.set('ix', state.impact[0].toFixed(4));
         q.set('iy', state.impact[1].toFixed(4));
+        if (state.extra.length)
+          q.set('imp', state.extra.map((e) => `${e.at[0].toFixed(4)},${e.at[1].toFixed(4)},${e.s.toFixed(2)}`).join(';'));
         q.set('style', state.style);
         if (state.shape !== 'rect') q.set('shape', state.shape);
         q.set('seed', String(state.seed));
@@ -348,6 +389,7 @@ const base = import.meta.env.BASE_URL;
           height,
           pieces: Number(inputs.pieces.value),
           impact: [state.impact[0] * width, state.impact[1] * height],
+          extraImpacts: state.extra.map((e) => ({ at: [e.at[0] * width, e.at[1] * height] as [number, number], strength: e.s })),
           concentration: Number(inputs.concentration.value) / 100,
           sliver: Number(inputs.sliver.value) / 100,
           core: Number(inputs.core.value),
@@ -441,11 +483,20 @@ const base = import.meta.env.BASE_URL;
           el.style.setProperty('--pulse-r', `${m * 0.09}px`);
         });
         $('#cross').setAttribute('d', `M${ix - c} ${iy}H${ix + c}M${ix} ${iy - c}V${iy + c}`);
+        impactG.classList.toggle('dim', selected !== 0);
+        $('#extra-impacts').innerHTML = (p.extraImpacts ?? [])
+          .map(({ at: [x, y], strength }, k) => {
+            const rr = m * 0.05 * (0.4 + strength);
+            const cls = `extra-impact${selected === k + 1 ? ' sel' : ''}`;
+            return `<g class="${cls}"><circle cx="${x}" cy="${y}" r="${rr}"/><path d="M${x - c} ${y}H${x + c}M${x} ${y - c}V${y + c}"/><text x="${x + c * 1.3}" y="${y - c * 1.3}" font-size="${m * 0.028}">${k + 2}</text></g>`;
+          })
+          .join('');
+        renderImpactPanel();
 
         const asked = p.pieces;
-        // With text or a shaped sheet the count naturally differs a little from the request.
+        // With text, a shaped sheet or several impacts the count differs a little from the request.
         $('#stat-pieces').innerHTML =
-          r.pieces.length === asked || p.textRings?.length || p.shape !== 'rect'
+          r.pieces.length === asked || p.textRings?.length || p.shape !== 'rect' || p.extraImpacts?.length
             ? String(r.pieces.length)
             : `${r.pieces.length}<span class="ml-1 text-xs font-medium text-laser" title="Piezas demasiado pequeñas para este tamaño">/ ${asked}</span>`;
         $('#stat-tabs').textContent = String(r.tabCount);
@@ -453,7 +504,8 @@ const base = import.meta.env.BASE_URL;
         const avg = Math.sqrt((W * H) / r.pieces.length);
         $('#stat-avg').textContent = `≈${avg.toFixed(0)} mm`;
         $('#dims').textContent = `${W} × ${H} mm`;
-        $('#coords').textContent = `impacto ${ix.toFixed(0)}, ${iy.toFixed(0)} mm`;
+        const [sx, sy] = selected === 0 ? p.impact : p.extraImpacts![selected - 1].at;
+        $('#coords').textContent = `impacto ${selected === 0 ? '' : `${selected + 1} `}${sx.toFixed(0)}, ${sy.toFixed(0)} mm`;
         $('#seed-out').textContent = `#${state.seed}`;
         writeHash();
       }
@@ -502,24 +554,119 @@ const base = import.meta.env.BASE_URL;
         schedule();
       });
 
-      // Impact point: click or drag on the sheet
-      function setImpactFromEvent(ev: PointerEvent) {
+      // ---- impacts: click moves the selected one, shift+click adds, drag a marker, double-click removes
+      function sheetPoint(ev: MouseEvent) {
         const ctm = sheet.getScreenCTM();
-        if (!ctm) return;
+        if (!ctm) return null;
         const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
         const W = Number(inputs.width.value);
         const H = Number(inputs.height.value);
         const clamp = (v: number) => Math.min(0.995, Math.max(0.005, v));
-        state.impact = [clamp(pt.x / W), clamp(pt.y / H)];
+        return { x: pt.x, y: pt.y, rel: [clamp(pt.x / W), clamp(pt.y / H)] as [number, number] };
+      }
+      const allImpacts = () => [state.impact, ...state.extra.map((e) => e.at)];
+      /** Index of the impact marker under a point (0 = main), or -1. */
+      function impactAt(x: number, y: number) {
+        const W = Number(inputs.width.value);
+        const H = Number(inputs.height.value);
+        const reach = Math.min(W, H) * 0.035;
+        let best = -1;
+        let bestD = reach;
+        allImpacts().forEach(([rx, ry], i) => {
+          const d = Math.hypot(rx * W - x, ry * H - y);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        });
+        return best;
+      }
+      function moveImpact(i: number, rel: [number, number]) {
+        if (i === 0) state.impact = rel;
+        else state.extra[i - 1].at = rel;
         schedule();
       }
+      function addImpact(rel: [number, number]) {
+        if (state.extra.length >= MAX_EXTRA) return false;
+        state.extra.push({ at: rel, s: 0.4 });
+        selected = state.extra.length;
+        schedule();
+        return true;
+      }
+      let dragging = -1;
       sheet.addEventListener('pointerdown', (ev) => {
+        const pt = sheetPoint(ev);
+        if (!pt) return;
         sheet.setPointerCapture(ev.pointerId);
-        setImpactFromEvent(ev);
+        const hit = impactAt(pt.x, pt.y);
+        if (hit >= 0) {
+          selected = dragging = hit;
+          schedule();
+        } else if (ev.shiftKey && addImpact(pt.rel)) {
+          dragging = selected;
+        } else {
+          dragging = selected;
+          moveImpact(selected, pt.rel);
+        }
       });
       sheet.addEventListener('pointermove', (ev) => {
-        if (sheet.hasPointerCapture(ev.pointerId)) setImpactFromEvent(ev);
+        if (sheet.hasPointerCapture(ev.pointerId) && dragging >= 0) {
+          const pt = sheetPoint(ev);
+          if (pt) moveImpact(dragging, pt.rel);
+        }
         showLoupe(ev);
+      });
+      sheet.addEventListener('pointerup', () => (dragging = -1));
+      sheet.addEventListener('dblclick', (ev) => {
+        const pt = sheetPoint(ev);
+        if (!pt) return;
+        const hit = impactAt(pt.x, pt.y);
+        if (hit > 0) removeImpact(hit);
+      });
+      function removeImpact(i: number) {
+        state.extra.splice(i - 1, 1);
+        selected = 0;
+        schedule();
+      }
+
+      const strengthInput = $<HTMLInputElement>('#strength');
+      function renderImpactPanel() {
+        const chips = [0, ...state.extra.map((_, k) => k + 1)]
+          .map(
+            (i) =>
+              `<button type="button" data-impact="${i}" class="impact-chip${i === selected ? ' sel' : ''}">${i === 0 ? 'Principal' : i + 1}</button>`,
+          )
+          .join('');
+        const add = state.extra.length < MAX_EXTRA ? '<button type="button" id="add-impact" class="impact-chip add">+ Impacto</button>' : '';
+        $('#impact-chips').innerHTML = chips + add;
+        $('#strength-field').hidden = selected === 0;
+        if (selected > 0) {
+          strengthInput.value = String(Math.round(state.extra[selected - 1].s * 100));
+          syncSlider(strengthInput);
+        }
+      }
+      $('#impact-chips').addEventListener('click', (ev) => {
+        const btn = (ev.target as HTMLElement).closest('button');
+        if (!btn) return;
+        if (btn.id === 'add-impact') {
+          // Opposite the main impact, a little higher up.
+          const [mx, my] = state.impact;
+          const clamp = (v: number) => Math.min(0.9, Math.max(0.1, v));
+          addImpact([clamp(1 - mx + (mx > 0.5 ? -0.1 : 0.1)), clamp(my - 0.2)]);
+        } else {
+          selected = Number(btn.dataset.impact);
+          schedule();
+        }
+      });
+      strengthInput.addEventListener('input', () => {
+        syncSlider(strengthInput);
+        if (selected > 0) {
+          state.extra[selected - 1].s = Number(strengthInput.value) / 100;
+          schedule();
+        }
+      });
+      $('#remove-impact').addEventListener('click', () => {
+        if (selected > 0) removeImpact(selected);
       });
       sheet.addEventListener('pointerleave', () => (loupe.hidden = true));
 
