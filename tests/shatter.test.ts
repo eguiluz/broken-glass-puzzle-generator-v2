@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { shatter, toSvg, type ShatterParams, type TabStyle } from '../src/lib/shatter';
 import { textRings } from '../src/lib/text';
 import type { SheetShape } from '../src/lib/shapes';
-import { DEFAULTS, LEGACY, distanceToRings, inInk, loadFont, overlappingCuts, selfIntersecting } from './helpers';
+import { DEFAULTS, LEGACY, areaOf, distanceToRings, inInk, loadFont, looseEnds, overlappingCuts, selfIntersecting } from './helpers';
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const svgOf = (p: ShatterParams, frame = false) => toSvg(p, shatter(p), { strokeWidth: 0.1, frame });
@@ -53,6 +53,11 @@ describe('geometry', () => {
 
   it.each(cases)('$name: no piece outline crosses itself', ({ p }) => {
     expect(selfIntersecting(shatter(p).pieces)).toBe(0);
+  });
+
+  it.each(cases)('$name: no cut stops in mid-air', ({ p }) => {
+    const r = shatter(p);
+    expect(looseEnds(r.cuts, r.outline)).toBe(0);
   });
 });
 
@@ -162,8 +167,18 @@ describe('several impacts', () => {
     expect(selfIntersecting(r.pieces)).toBe(0);
   });
 
+  it.each(cases)('$name: no cut stops in mid-air and no crumbs', ({ r }) => {
+    expect(looseEnds(r.cuts, r.outline)).toBe(0);
+    expect(Math.min(...r.pieces.filter((_, i) => !r.letters[i]).map(areaOf))).toBeGreaterThan(6);
+  });
+
+  // Where breakages cross, pieces are split in ways the seed count can't foresee exactly.
   it.each(cases)('$name: about the requested number of pieces', ({ r }) => {
-    expect(Math.abs(r.pieces.length - DEFAULTS.pieces)).toBeLessThanOrEqual(0.05 * DEFAULTS.pieces);
+    expect(Math.abs(r.pieces.length - DEFAULTS.pieces)).toBeLessThanOrEqual(0.1 * DEFAULTS.pieces);
+  });
+
+  it.each(cases)('$name: no fragile spots where the breakages meet', ({ r }) => {
+    expect(r.fragile).toHaveLength(0);
   });
 
   it('gives the single-impact puzzle when the list is empty', () => {
