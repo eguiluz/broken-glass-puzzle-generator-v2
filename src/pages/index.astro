@@ -12,6 +12,7 @@ const sliders = [
   { id: 'coreSplit', label: 'Trozos del centro', min: 1, max: 8, step: 1, value: 2, unit: '', help: 'En cuántas piezas queda la zona central: 1 = una sola pieza, 8 = sin fusionar. Solo con pieza central.' },
   { id: 'chaos', label: 'Caos central', min: 0, max: 100, step: 1, value: 55, unit: '%', help: 'Irregularidad del centro: forma desigual, rayos que salen de varios puntos y primeros anillos desordenados.' },
   { id: 'ringBreak', label: 'Anillos rotos', min: 0, max: 100, step: 1, value: 40, unit: '%', help: 'Cuánto se interrumpen las grietas concéntricas. 0 % = anillos completos.' },
+  { id: 'waviness', label: 'Grietas onduladas', min: 0, max: 100, step: 1, value: 50, unit: '%', help: 'Cuánto se curvan las grietas, como en el cristal real. 0 % = grietas rectas. Una grieta que quedaría demasiado cerca de otra se deja recta.' },
   { id: 'contrast', label: 'Contraste de tamaño', min: 0, max: 100, step: 1, value: 50, unit: '%', help: 'Diferencia de tamaño entre las piezas del impacto y las del borde. Más alto = astillas diminutas y piezas enormes.' },
   { id: 'tab', label: 'Pestaña', min: 0, max: 12, step: 0.5, value: 5, unit: 'mm', help: 'Tamaño de las pestañas de encaje, en milímetros. 0 = sin pestañas.' },
   { id: 'tabWidth', label: 'Ancho de pestaña', min: 40, max: 200, step: 5, value: 100, unit: '%', help: 'Anchura de las pestañas a lo largo de la arista. No cambia su profundidad.' },
@@ -231,7 +232,7 @@ const base = import.meta.env.BASE_URL;
       const plate = $<SVGRectElement>('#plate');
       const impactG = $<SVGGElement>('#impact');
 
-      const ids = ['pieces', 'width', 'height', 'concentration', 'sliver', 'core', 'coreSplit', 'chaos', 'ringBreak', 'contrast', 'tab', 'tabWidth', 'tabWidthVariation', 'tabDensity', 'textSize', 'textX', 'textY', 'kerf', 'minWidth'] as const;
+      const ids = ['pieces', 'width', 'height', 'concentration', 'sliver', 'core', 'coreSplit', 'chaos', 'ringBreak', 'waviness', 'contrast', 'tab', 'tabWidth', 'tabWidthVariation', 'tabDensity', 'textSize', 'textX', 'textY', 'kerf', 'minWidth'] as const;
       // Links made before a parameter existed must keep producing the same puzzle.
       const legacyDefaults: Partial<Record<(typeof ids)[number], string>> = {
         sliver: '0',
@@ -240,6 +241,7 @@ const base = import.meta.env.BASE_URL;
         chaos: '0',
         ringBreak: '0',
         contrast: '0',
+        waviness: '0',
         tabDensity: '100',
         tabWidth: '100',
         tabWidthVariation: '0',
@@ -306,6 +308,7 @@ const base = import.meta.env.BASE_URL;
           chaos: Number(inputs.chaos.value) / 100,
           ringBreak: Number(inputs.ringBreak.value) / 100,
           contrast: Number(inputs.contrast.value) / 100,
+          waviness: Number(inputs.waviness.value) / 100,
           tabSize: Number(inputs.tab.value),
           tabDensity: Number(inputs.tabDensity.value) / 100,
           tabWidth: Number(inputs.tabWidth.value) / 100,
