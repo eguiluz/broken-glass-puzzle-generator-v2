@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { shatter, toSvg, type ShatterParams, type TabStyle } from '../src/lib/shatter';
 import { textRings } from '../src/lib/text';
+import type { SheetShape } from '../src/lib/shapes';
 import { DEFAULTS, LEGACY, distanceToRings, inInk, loadFont, overlappingCuts, selfIntersecting } from './helpers';
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -104,6 +105,41 @@ describe('fragile spots', () => {
 
   it('reports nothing when the check is off', () => {
     expect(shatter({ ...DEFAULTS, minWidth: 0 }).fragile).toHaveLength(0);
+  });
+});
+
+describe('sheet shapes', () => {
+  const shapes: SheetShape[] = ['rounded', 'circle', 'heart'];
+  const cases = shapes.map((shape) => ({
+    shape,
+    r: shatter({
+      ...DEFAULTS,
+      shape,
+      cornerRadius: 40,
+      tabStyle: 'mixed',
+      textRings: shape === 'heart' ? textRings(loadFont(), { text: 'DAVID', size: 45, x: 0.5, y: 0.35 }, 300, 300) : [],
+    }),
+  }));
+
+  it.each(cases)('$shape: no line is cut twice and no outline crosses itself', ({ r }) => {
+    expect(overlappingCuts(r.cuts)).toBe(0);
+    expect(selfIntersecting(r.pieces)).toBe(0);
+  });
+
+  it.each(cases)('$shape: every piece stays on the sheet', ({ r }) => {
+    for (const pl of r.pieces)
+      for (const q of pl) if (!inInk(q, [r.outline])) expect(distanceToRings(q, [r.outline])).toBeLessThan(1e-6);
+  });
+
+  it.each(cases)('$shape: about the requested number of pieces', ({ r }) => {
+    expect(Math.abs(r.pieces.length - DEFAULTS.pieces)).toBeLessThanOrEqual(0.05 * DEFAULTS.pieces);
+  });
+
+  it('uses the outline as the frame, cut last', () => {
+    const p = { ...DEFAULTS, shape: 'circle' as SheetShape };
+    const drawn = svgOf(p, true).split('\n').map((l) => l.trim()).filter((l) => l.startsWith('<path') || l.startsWith('<rect'));
+    expect(drawn.some((l) => l.startsWith('<rect'))).toBe(false);
+    expect(drawn.at(-1)).toMatch(/Z"\/>$/);
   });
 });
 

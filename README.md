@@ -5,6 +5,7 @@ Generador web de puzzles con efecto **cristal roto**, listos para **corte láser
 - Clic (o arrastrar) sobre la plancha para colocar el punto de impacto.
 - Sliders para número de piezas, ancho, alto, concentración de piezas en el impacto y tamaño de pestaña.
 - Pestañas de encaje tipo cola de milano, flecha o mezcla, con comprobación de colisiones.
+- Forma de la plancha: rectángulo, esquinas redondeadas, círculo (u óvalo) o corazón; el contorno es el marco.
 - Texto personalizado (por ejemplo, un nombre): cada letra es una pieza con su forma exacta, las grietas
   se detienen en ella y los huecos de letras como la D o la A son piezas propias.
 - Exporta un SVG en milímetros, líneas negras sin relleno. Cada grieta compartida se exporta **una sola vez**

@@ -24,6 +24,12 @@ const textSliders = [
   { id: 'textX', label: 'Posición horizontal', min: 0, max: 100, step: 1, value: 50, unit: '%', help: 'Dónde queda el centro del texto, de izquierda (0 %) a derecha (100 %).' },
   { id: 'textY', label: 'Posición vertical', min: 0, max: 100, step: 1, value: 30, unit: '%', help: 'Dónde queda el centro del texto, de arriba (0 %) abajo (100 %).' },
 ];
+const shapes = [
+  { value: 'rect', label: 'Rectángulo' },
+  { value: 'rounded', label: 'Redondeada' },
+  { value: 'circle', label: 'Círculo' },
+  { value: 'heart', label: 'Corazón' },
+];
 const styles = [
   { value: 'mixed', label: 'Mixta' },
   { value: 'dovetail', label: 'Milano' },
@@ -77,7 +83,7 @@ const base = import.meta.env.BASE_URL;
                 <stop offset="1" stop-color="#16242c" />
               </linearGradient>
             </defs>
-            <rect id="plate" x="0" y="0" fill="url(#acrylic)" stroke="#8fe6ff" stroke-opacity="0.7" vector-effect="non-scaling-stroke" stroke-width="1.5"></rect>
+            <path id="plate" fill="url(#acrylic)" stroke="#8fe6ff" stroke-opacity="0.7" vector-effect="non-scaling-stroke" stroke-width="1.5"></path>
             <g class="pieces" id="pieces-g"></g>
             <g id="fragile-g" pointer-events="none"></g>
             <g id="impact" pointer-events="none">
@@ -92,7 +98,7 @@ const base = import.meta.env.BASE_URL;
           <!-- Magnifier: the cuts at their real kerf width, which is sub-pixel at sheet scale -->
           <div id="loupe" class="loupe" hidden>
             <svg id="loupe-svg" class="block size-full" aria-hidden="true">
-              <rect id="loupe-plate" x="0" y="0" fill="#4a7382"></rect>
+              <path id="loupe-plate" fill="#4a7382"></path>
               <path id="loupe-cuts" fill="none" stroke="#020304" stroke-linejoin="round" stroke-linecap="round"></path>
             </svg>
             <span id="loupe-label" class="loupe-label"></span>
@@ -121,6 +127,40 @@ const base = import.meta.env.BASE_URL;
 
       <!-- Controls -->
       <aside class="sidebar-scroll rise min-w-0 flex flex-col gap-5 rounded-lg border border-line bg-panel p-5 lg:min-h-0 lg:overflow-y-auto" style="animation-delay: 160ms">
+        <fieldset class="flex flex-col gap-2">
+          <legend class="field relative mb-2 flex w-full items-center gap-1.5">
+            <span class="text-[11px] uppercase tracking-widest text-dim">Forma de la plancha</span>
+            <button type="button" class="help" aria-label="Ayuda: Forma de la plancha" aria-describedby="shape-help">?</button>
+            <span role="tooltip" id="shape-help" class="tip">
+              Contorno de la plancha dentro del ancho y el alto. El círculo se convierte en óvalo si no son iguales. El contorno es el marco, y se corta el último.
+            </span>
+          </legend>
+          <div class="grid grid-cols-2 gap-1 rounded-md border border-line p-1 sm:grid-cols-4 lg:grid-cols-2" id="shape-group">
+            {
+              shapes.map((sh, i) => (
+                <label class="cursor-pointer">
+                  <input type="radio" name="sheetShape" value={sh.value} class="peer sr-only" checked={i === 0} />
+                  <span class="block rounded py-1.5 text-center text-dim transition peer-checked:bg-glass peer-checked:text-bed peer-focus-visible:ring-2 peer-focus-visible:ring-laser hover:text-ink">
+                    {sh.label}
+                  </span>
+                </label>
+              ))
+            }
+          </div>
+          <div id="corner-field" hidden>
+            <Slider
+              id="corner"
+              label="Radio de esquina"
+              min={2}
+              max={150}
+              step={1}
+              value={30}
+              unit="mm"
+              help="Radio de las esquinas redondeadas. Se limita a la mitad del lado más corto."
+            />
+          </div>
+        </fieldset>
+
         <section class="flex flex-col gap-4">
           {sliders.map((s) => <Slider {...s} />)}
         </section>
@@ -225,14 +265,15 @@ const base = import.meta.env.BASE_URL;
       import fontUrl from '@fontsource/chakra-petch/files/chakra-petch-latin-700-normal.woff?url';
       import { shatter, toSvg, pathD, type ShatterParams, type TabStyle } from '../lib/shatter';
       import { textRings } from '../lib/text';
+      import type { SheetShape } from '../lib/shapes';
 
       const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector(sel) as unknown as T;
       const sheet = $<SVGSVGElement>('#sheet');
       const piecesG = $<SVGGElement>("#pieces-g");
-      const plate = $<SVGRectElement>('#plate');
+      const plate = $<SVGPathElement>('#plate');
       const impactG = $<SVGGElement>('#impact');
 
-      const ids = ['pieces', 'width', 'height', 'concentration', 'sliver', 'core', 'coreSplit', 'chaos', 'ringBreak', 'waviness', 'contrast', 'tab', 'tabWidth', 'tabWidthVariation', 'tabDensity', 'textSize', 'textX', 'textY', 'kerf', 'minWidth'] as const;
+      const ids = ['pieces', 'width', 'height', 'concentration', 'sliver', 'core', 'coreSplit', 'chaos', 'ringBreak', 'waviness', 'contrast', 'tab', 'tabWidth', 'tabWidthVariation', 'tabDensity', 'textSize', 'textX', 'textY', 'kerf', 'minWidth', 'corner'] as const;
       // Links made before a parameter existed must keep producing the same puzzle.
       const legacyDefaults: Partial<Record<(typeof ids)[number], string>> = {
         sliver: '0',
@@ -261,6 +302,7 @@ const base = import.meta.env.BASE_URL;
         impact: [0.55, 0.6] as [number, number], // relative to the sheet
         seed: Math.floor(Math.random() * 1e6),
         style: 'barb' as TabStyle,
+        shape: 'rect' as SheetShape,
       };
 
       // ---- URL hash <-> state -------------------------------------------------
@@ -280,6 +322,10 @@ const base = import.meta.env.BASE_URL;
         if (st === 'mixed' && q.has('seed') && !q.has('tabDensity')) state.style = 'mixed-classic';
         const radio = state.style === 'mixed-classic' ? 'mixed' : state.style;
         $<HTMLInputElement>(`input[name="tabStyle"][value="${radio}"]`).checked = true;
+        const sh = q.get('shape');
+        if (sh === 'rect' || sh === 'rounded' || sh === 'circle' || sh === 'heart') state.shape = sh;
+        $<HTMLInputElement>(`input[name="sheetShape"][value="${state.shape}"]`).checked = true;
+        $('#corner-field').hidden = state.shape !== 'rounded';
       }
       function writeHash() {
         const q = new URLSearchParams();
@@ -287,6 +333,7 @@ const base = import.meta.env.BASE_URL;
         q.set('ix', state.impact[0].toFixed(4));
         q.set('iy', state.impact[1].toFixed(4));
         q.set('style', state.style);
+        if (state.shape !== 'rect') q.set('shape', state.shape);
         q.set('seed', String(state.seed));
         if (textInput.value.trim()) q.set('text', textInput.value);
         history.replaceState(null, '', `#${q}`);
@@ -316,6 +363,8 @@ const base = import.meta.env.BASE_URL;
           kerf: Number(inputs.kerf.value),
           minWidth: Number(inputs.minWidth.value),
           tabStyle: state.style,
+          shape: state.shape,
+          cornerRadius: Number(inputs.corner.value),
           seed: state.seed,
           textRings: font
             ? textRings(
@@ -338,7 +387,7 @@ const base = import.meta.env.BASE_URL;
       const loupe = $<HTMLDivElement>('#loupe');
       const loupeSvg = $<SVGSVGElement>('#loupe-svg');
       const loupeCuts = $<SVGPathElement>('#loupe-cuts');
-      const loupePlate = $<SVGRectElement>('#loupe-plate');
+      const loupePlate = $<SVGPathElement>('#loupe-plate');
       const LOUPE_ZOOM = 6;
 
       function render() {
@@ -351,8 +400,8 @@ const base = import.meta.env.BASE_URL;
         sheet.style.aspectRatio = `${W} / ${H}`;
         sheet.style.width = W >= H ? '100%' : 'auto';
         sheet.style.height = W >= H ? 'auto' : '100%';
-        plate.setAttribute('width', String(W));
-        plate.setAttribute('height', String(H));
+        const outlineD = pathD(r.outline, true);
+        plate.setAttribute('d', outlineD);
 
         const fragile = new Set(r.fragile.map((f) => f.piece));
         piecesG.innerHTML = r.pieces
@@ -376,12 +425,11 @@ const base = import.meta.env.BASE_URL;
 
         // Loupe content: every cut plus the frame, stroked at the real kerf width (in mm).
         const kerf = p.kerf ?? 0;
-        loupeCuts.setAttribute('d', r.cuts.map((pl) => pathD(pl)).join('') + `M0 0H${W}V${H}H0Z`);
+        loupeCuts.setAttribute('d', r.cuts.map((pl) => pathD(pl)).join('') + outlineD);
         loupeCuts.setAttribute('stroke-width', String(kerf > 0 ? kerf : 1));
         if (kerf > 0) loupeCuts.removeAttribute('vector-effect');
         else loupeCuts.setAttribute('vector-effect', 'non-scaling-stroke');
-        loupePlate.setAttribute('width', String(W));
-        loupePlate.setAttribute('height', String(H));
+        loupePlate.setAttribute('d', outlineD);
         $('#loupe-label').textContent = kerf > 0 ? `×${LOUPE_ZOOM} · kerf ${kerf} mm` : `×${LOUPE_ZOOM} · sin kerf`;
 
         const [ix, iy] = p.impact;
@@ -395,9 +443,9 @@ const base = import.meta.env.BASE_URL;
         $('#cross').setAttribute('d', `M${ix - c} ${iy}H${ix + c}M${ix} ${iy - c}V${iy + c}`);
 
         const asked = p.pieces;
-        // With text the count naturally differs from the request (letters, counters).
+        // With text or a shaped sheet the count naturally differs a little from the request.
         $('#stat-pieces').innerHTML =
-          r.pieces.length === asked || p.textRings?.length
+          r.pieces.length === asked || p.textRings?.length || p.shape !== 'rect'
             ? String(r.pieces.length)
             : `${r.pieces.length}<span class="ml-1 text-xs font-medium text-laser" title="Piezas demasiado pequeñas para este tamaño">/ ${asked}</span>`;
         $('#stat-tabs').textContent = String(r.tabCount);
@@ -436,6 +484,13 @@ const base = import.meta.env.BASE_URL;
         });
       }
       textInput.addEventListener('input', schedule);
+      document.querySelectorAll<HTMLInputElement>('input[name="sheetShape"]').forEach((el) =>
+        el.addEventListener('change', () => {
+          state.shape = el.value as SheetShape;
+          $('#corner-field').hidden = state.shape !== 'rounded';
+          schedule();
+        }),
+      );
       document.querySelectorAll<HTMLInputElement>('input[name="tabStyle"]').forEach((el) =>
         el.addEventListener('change', () => {
           state.style = el.value as TabStyle;

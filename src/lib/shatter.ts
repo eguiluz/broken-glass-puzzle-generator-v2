@@ -1,4 +1,5 @@
 import { Delaunay } from 'd3-delaunay';
+import { sheetOutline, type SheetShape } from './shapes';
 
 export type Pt = [number, number];
 // 'mixed-classic' is the original dovetail/arrow mix, kept so older links reproduce exactly.
@@ -23,6 +24,8 @@ export interface ShatterParams {
   kerf?: number; // mm burnt away by the laser; tabs are widened so they still lock (0 = ignore)
   minWidth?: number; // mm — thinnest material the sheet can take; tabs respect it, thinner spots are reported
   waviness?: number; // 0..1 — how much the straight cracks bend into gentle waves (0 = straight)
+  shape?: SheetShape; // outline of the sheet inside the width × height box (default: rectangle)
+  cornerRadius?: number; // mm, for the rounded rectangle
   tabStyle: TabStyle;
   seed: number;
   /** Glyph outlines in mm (outer contours and counters; the ink is their even-odd fill). */
@@ -46,6 +49,8 @@ export interface ShatterResult {
   holes: Pt[][][];
   /** Whether each piece is a letter of the text. */
   letters: boolean[];
+  /** Outline of the sheet (the frame), in mm. */
+  outline: Pt[];
   /** Spots thinner than `minWidth` (after the kerf) that could snap, at most one per piece. */
   fragile: Fragile[];
   tabCount: number;
@@ -336,8 +341,12 @@ function buildGraph(
   H: number,
   central: { inner: number; keep: number; rng: () => number },
   rings: Pt[][] = [],
+  boundary?: Pt[],
 ) {
-  const voronoi = Delaunay.from(seeds).voronoi([0, 0, W, H]);
+  // With a shaped sheet the diagram overshoots the box a little, so the sheet outline
+  // always crosses the cracks cleanly instead of running along the box edge.
+  const pad = boundary ? 2 : 0;
+  const voronoi = Delaunay.from(seeds).voronoi([-pad, -pad, W + pad, H + pad]);
   const verts: Pt[] = [];
   const index = new Map<string, number>();
   const vid = (pt: Pt) => {
@@ -419,8 +428,8 @@ function buildGraph(
   let holes: number[][][] = cells.map(() => []);
   let ink: boolean[] = cells.map(() => false);
   let letterKeys = new Set<string>();
-  if (rings.length) {
-    const carved = carveText(verts, cells, rings);
+  if (rings.length || boundary) {
+    const carved = carveText(verts, cells, rings, boundary);
     ({ verts: V, cells, holes, ink, letterKeys } = carved);
     // Carved pieces can be concave: orient their tabs by winding, not by centroid.
     merged = new Set(cells.map((_, ci) => ci));
@@ -484,14 +493,15 @@ const FRAGMENT_AREA = 4; // mm² — anything this small against a letter is mer
 const FRAGMENT_SHARE = 0.3; // …as is any part of a cell cut down by a letter to less than this share
 
 /**
- * Cut the letters out of the crack graph: cracks stop at letter outlines, letters (and
- * their counters) become pieces, and slivers left against a letter merge into a neighbour.
- * Returns a fresh planar graph whose faces may have holes.
+ * Cut the letters out of the crack graph, and trim it to the sheet outline: cracks stop at
+ * letter outlines and at the sheet edge, letters (and their counters) become pieces,
+ * whatever lies outside the sheet is dropped, and slivers left against a letter or the
+ * edge merge into a neighbour. Returns a fresh planar graph whose faces may have holes.
  */
-function carveText(verts: Pt[], cells: number[][], rings: Pt[][]) {
-  // 1. Split cracks and letter outlines at their crossings. Each crossing point is
-  //    computed once and shared by both, so the pieces meet exactly.
-  type Seg = { a: Pt; b: Pt; cuts: { t: number; p: Pt }[]; letter: boolean };
+function carveText(verts: Pt[], cells: number[][], rings: Pt[][], boundary?: Pt[]) {
+  // 1. Split cracks, letter outlines and the sheet outline at their crossings. Each
+  //    crossing point is computed once and shared by both lines, so the pieces meet exactly.
+  type Seg = { a: Pt; b: Pt; cuts: { t: number; p: Pt }[]; kind: 'crack' | 'letter' | 'edge' };
   const segs: Seg[] = [];
   const seen = new Set<string>();
   for (const c of cells) {
@@ -501,21 +511,27 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][]) {
       const k = u < v ? `${u}-${v}` : `${v}-${u}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      segs.push({ a: verts[u], b: verts[v], cuts: [], letter: false });
+      segs.push({ a: verts[u], b: verts[v], cuts: [], kind: 'crack' });
     }
   }
-  const crackCount = segs.length;
-  for (const r of rings) for (let i = 0; i < r.length; i++) segs.push({ a: r[i], b: r[(i + 1) % r.length], cuts: [], letter: true });
+  const cracks = segs.slice();
+  const letters: Seg[] = [];
+  for (const r of rings) for (let i = 0; i < r.length; i++) letters.push({ a: r[i], b: r[(i + 1) % r.length], cuts: [], kind: 'letter' });
+  const edge: Seg[] = [];
+  if (boundary)
+    for (let i = 0; i < boundary.length; i++)
+      edge.push({ a: boundary[i], b: boundary[(i + 1) % boundary.length], cuts: [], kind: 'edge' });
+  segs.push(...letters, ...edge);
+  const inside = (q: Pt) => !boundary || pointInPolygon(q, boundary);
 
-  for (let i = 0; i < crackCount; i++) {
-    const s = segs[i];
+  const crossAll = (A: Seg[], B: Seg[]) => {
+    for (const s of A) {
     const [ax, ay] = s.a;
     const rx = s.b[0] - ax;
     const ry = s.b[1] - ay;
     const x0 = Math.min(ax, s.b[0]), x1 = Math.max(ax, s.b[0]);
     const y0 = Math.min(ay, s.b[1]), y1 = Math.max(ay, s.b[1]);
-    for (let j = crackCount; j < segs.length; j++) {
-      const o = segs[j];
+    for (const o of B) {
       if (Math.max(o.a[0], o.b[0]) < x0 || Math.min(o.a[0], o.b[0]) > x1) continue;
       if (Math.max(o.a[1], o.b[1]) < y0 || Math.min(o.a[1], o.b[1]) > y1) continue;
       const qx = o.b[0] - o.a[0];
@@ -531,7 +547,11 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][]) {
       s.cuts.push({ t, p });
       o.cuts.push({ t: u, p });
     }
-  }
+    }
+  };
+  crossAll(cracks, letters);
+  crossAll(cracks, edge);
+  crossAll(letters, edge);
 
   // 2. Planar graph of the pieces that survive: crack parts outside the ink, all outlines.
   const V: Pt[] = [];
@@ -549,6 +569,8 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][]) {
   const ek = (u: number, v: number) => (u < v ? `${u}-${v}` : `${v}-${u}`);
   const adj = new Map<number, Set<number>>();
   const letterKeys = new Set<string>();
+  // Letter outlines and the sheet edge: slivers against either get merged.
+  const wallKeys = new Set<string>();
   const link = (u: number, v: number) => {
     if (!adj.has(u)) adj.set(u, new Set());
     if (!adj.has(v)) adj.set(v, new Set());
@@ -561,12 +583,15 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][]) {
       const a = pts[i].p;
       const b = pts[i + 1].p;
       if (dist(a, b) < 1e-9) continue;
-      if (!s.letter && inInk([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], rings)) continue;
+      const mid: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      if (s.kind === 'crack' && (inInk(mid, rings) || !inside(mid))) continue;
+      if (s.kind === 'letter' && !inside(mid)) continue;
       const u = vid(a);
       const v = vid(b);
       if (u === v) continue;
       link(u, v);
-      if (s.letter) letterKeys.add(ek(u, v));
+      if (s.kind === 'letter') letterKeys.add(ek(u, v));
+      if (s.kind !== 'crack') wallKeys.add(ek(u, v));
     }
   }
 
@@ -677,7 +702,7 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][]) {
       for (let i = 0; i < c.length; i++) {
         const u = c[i];
         const v = c[(i + 1) % c.length];
-        if (letterKeys.has(ek(u, v))) {
+        if (wallKeys.has(ek(u, v))) {
           againstLetter = true;
           continue;
         }
@@ -719,11 +744,13 @@ function carveText(verts: Pt[], cells: number[][], rings: Pt[][]) {
   }
 
   const f = faces();
+  // Anything outside the sheet outline is offcut, not a piece.
+  const keep = f.bounded.map((_, k) => inside(f.samples[k]));
   return {
     verts: V,
-    cells: f.bounded.map((ci) => f.cycles[ci]),
-    holes: f.holesOf.map((hs) => hs.map((hi) => f.cycles[hi])),
-    ink: f.inkOf,
+    cells: f.bounded.map((ci) => f.cycles[ci]).filter((_, k) => keep[k]),
+    holes: f.holesOf.map((hs) => hs.map((hi) => f.cycles[hi])).filter((_, k) => keep[k]),
+    ink: f.inkOf.filter((_, k) => keep[k]),
     letterKeys,
   };
 }
@@ -1072,16 +1099,36 @@ function chain(polys: Pt[][]): Pt[][] {
 // ---------------------------------------------------------------------------
 
 export function shatter(p: ShatterParams): ShatterResult {
-  const { seeds: all, inner } = seedsForCount(p);
+  if ((p.shape ?? 'rect') === 'rect') return shatterOnce(p, p.pieces);
+  // A shaped sheet loses the corners of the box: sow seeds in proportion to its area, then
+  // correct once if merges along the edge left the count noticeably off.
+  const outline = sheetOutline(p.shape!, p.width, p.height, p.cornerRadius ?? 0);
+  const sow = Math.round(p.pieces / (Math.abs(signedArea(outline)) / (p.width * p.height)));
+  const first = shatterOnce(p, sow);
+  const got = first.pieces.length;
+  if (Math.abs(got - p.pieces) <= 0.02 * p.pieces || got === 0) return first;
+  const second = shatterOnce(p, Math.round((sow * p.pieces) / got));
+  return Math.abs(second.pieces.length - p.pieces) < Math.abs(got - p.pieces) ? second : first;
+}
+
+/** One pass of the generator; `sow` is how many cells to aim for in the whole box. */
+function shatterOnce(p: ShatterParams, sow: number): ShatterResult {
+  const shaped = (p.shape ?? 'rect') !== 'rect';
+  const outline = sheetOutline(p.shape ?? 'rect', p.width, p.height, p.cornerRadius ?? 0);
+  const { seeds: all, inner } = seedsForCount(shaped ? { ...p, pieces: sow } : p);
   const rings = p.textRings ?? [];
-  // Seeds inside the letters would only make cells that the letters then swallow.
-  const seeds = rings.length ? all.filter((q, i) => i <= inner || !inInk(q, rings)) : all;
+  // Seeds inside the letters (or off the sheet) would only make cells that get swallowed.
+  const seeds =
+    rings.length || shaped
+      ? all.filter((q, i) => i <= inner || ((!rings.length || !inInk(q, rings)) && (!shaped || pointInPolygon(q, outline))))
+      : all;
   const graph = buildGraph(
     seeds,
     p.width,
     p.height,
     { inner, keep: Math.max(1, Math.round(p.coreSplit)), rng: mulberry32(p.seed ^ 0x2c1b3c6d) },
     rings,
+    shaped ? outline : undefined,
   );
   const tabCount = addTabs(p, graph, mulberry32(p.seed ^ 0x51ed270b));
   const straight = waveEdges(p, graph);
@@ -1130,9 +1177,10 @@ export function shatter(p: ShatterParams): ShatterResult {
   const interior = [...graph.edges.values()].filter((e) => e.cells.length === 2).map((e) => e.poly);
   const cuts = chain(interior);
   const cutLength =
-    cuts.reduce((acc, pl) => acc + polylineLength(pl), 0) + 2 * (p.width + p.height);
+    cuts.reduce((acc, pl) => acc + polylineLength(pl), 0) +
+    (shaped ? polylineLength([...outline, outline[0]]) : 2 * (p.width + p.height));
 
-  return { cuts, pieces, holes, letters: graph.ink, fragile, tabCount, cutLength };
+  return { cuts, pieces, holes, letters: graph.ink, outline, fragile, tabCount, cutLength };
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,7 +1393,11 @@ export function toSvg(
   // outline first would free the sheet and let pieces shift while the rest is cut.
   if (opts.frame) {
     lines.push('  <!-- Marco exterior: se corta el último -->');
-    lines.push(`  <rect x="0" y="0" width="${f(W)}" height="${f(H)}"/>`);
+    lines.push(
+      (p.shape ?? 'rect') === 'rect'
+        ? `  <rect x="0" y="0" width="${f(W)}" height="${f(H)}"/>`
+        : `  <path d="${pathD(r.outline, true)}"/>`,
+    );
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!-- Broken glass puzzle · ${r.pieces.length} pieces · ${W}×${H} mm · seed ${p.seed} -->
