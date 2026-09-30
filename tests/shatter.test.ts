@@ -40,6 +40,7 @@ describe('geometry', () => {
         tabWidth: seed === 2 ? 1.4 : 1,
         tabWidthVariation: 1,
         kerf: 0.2,
+        waviness: seed === 1 ? 1 : 0.5,
         textRings: seed === 3 ? textRings(loadFont(), { text: words[i % words.length], size: 40, x: 0.5, y: 0.3 }, 300, 300) : [],
       } satisfies ShatterParams,
     })),
@@ -103,6 +104,24 @@ describe('fragile spots', () => {
 
   it('reports nothing when the check is off', () => {
     expect(shatter({ ...DEFAULTS, minWidth: 0 }).fragile).toHaveLength(0);
+  });
+});
+
+describe('wavy cracks', () => {
+  it('bends the cracks but keeps every crack junction in place', () => {
+    const straight = shatter({ ...DEFAULTS, waviness: 0 });
+    const wavy = shatter({ ...DEFAULTS, waviness: 1 });
+    const ends = (cuts: typeof straight.cuts) =>
+      new Set(cuts.flatMap((pl) => [pl[0], pl.at(-1)!]).map(([x, y]) => `${x.toFixed(6)},${y.toFixed(6)}`));
+    expect(wavy.cuts.reduce((n, pl) => n + pl.length, 0)).toBeGreaterThan(2 * straight.cuts.reduce((n, pl) => n + pl.length, 0));
+    expect(ends(wavy.cuts)).toEqual(ends(straight.cuts));
+  });
+
+  it('never makes a piece fragile', () => {
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const straight = shatter({ ...DEFAULTS, seed, waviness: 0 }).fragile.length;
+      expect(shatter({ ...DEFAULTS, seed, waviness: 1 }).fragile.length).toBeLessThanOrEqual(straight);
+    }
   });
 });
 

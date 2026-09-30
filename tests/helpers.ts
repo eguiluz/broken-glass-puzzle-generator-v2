@@ -24,6 +24,7 @@ export const DEFAULTS: ShatterParams = {
   seed: 2024,
   kerf: 0.15,
   minWidth: 2,
+  waviness: 0.5,
 };
 
 /** Parameters a link gets when it was made before any of the newer settings existed. */

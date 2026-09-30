@@ -22,6 +22,7 @@ export interface ShatterParams {
   tabWidthVariation: number; // 0..1 — random per-tab width spread (1 ≈ half to double)
   kerf?: number; // mm burnt away by the laser; tabs are widened so they still lock (0 = ignore)
   minWidth?: number; // mm — thinnest material the sheet can take; tabs respect it, thinner spots are reported
+  waviness?: number; // 0..1 — how much the straight cracks bend into gentle waves (0 = straight)
   tabStyle: TabStyle;
   seed: number;
   /** Glyph outlines in mm (outer contours and counters; the ink is their even-odd fill). */
@@ -1083,6 +1084,7 @@ export function shatter(p: ShatterParams): ShatterResult {
     rings,
   );
   const tabCount = addTabs(p, graph, mulberry32(p.seed ^ 0x51ed270b));
+  const straight = waveEdges(p, graph);
 
   const trace = (c: number[]) => {
     const outline: Pt[] = [];
@@ -1095,17 +1097,155 @@ export function shatter(p: ShatterParams): ShatterResult {
     }
     return outline;
   };
-  const pieces = graph.cells.map(trace);
-  const holes = graph.holes.map((hs) => hs.map(trace));
+  let pieces = graph.cells.map(trace);
+  let holes = graph.holes.map((hs) => hs.map(trace));
+
+  const minWidth = p.minWidth ?? 0;
+  const kerf = p.kerf ?? 0;
+  let fragile = minWidth > 0 ? findFragile(pieces, holes, kerf, minWidth) : [];
+  // Waves must never be what makes a piece fragile: straighten the bent cracks of any
+  // fragile piece and look again (a piece fragile with straight cracks stays reported).
+  for (let round = 0; round < 3 && fragile.length && straight.size; round++) {
+    let reverted = false;
+    for (const f of fragile) {
+      for (const loop of [graph.cells[f.piece], ...graph.holes[f.piece]]) {
+        for (let i = 0; i < loop.length; i++) {
+          const u = loop[i];
+          const v = loop[(i + 1) % loop.length];
+          const e = graph.edges.get(u < v ? `${u}-${v}` : `${v}-${u}`)!;
+          const orig = straight.get(e);
+          if (!orig) continue;
+          e.poly = orig;
+          straight.delete(e);
+          reverted = true;
+        }
+      }
+    }
+    if (!reverted) break;
+    pieces = graph.cells.map(trace);
+    holes = graph.holes.map((hs) => hs.map(trace));
+    fragile = findFragile(pieces, holes, kerf, minWidth);
+  }
 
   const interior = [...graph.edges.values()].filter((e) => e.cells.length === 2).map((e) => e.poly);
   const cuts = chain(interior);
   const cutLength =
     cuts.reduce((acc, pl) => acc + polylineLength(pl), 0) + 2 * (p.width + p.height);
 
-  const fragile = (p.minWidth ?? 0) > 0 ? findFragile(pieces, holes, p.kerf ?? 0, p.minWidth!) : [];
-
   return { cuts, pieces, holes, letters: graph.ink, fragile, tabCount, cutLength };
+}
+
+// ---------------------------------------------------------------------------
+// Wavy cracks
+
+const WAVE_STEP = 1.5; // mm between the points of a bent crack
+const WAVE_AMPLITUDE = 0.04; // of the stretch length, at full waviness
+const WAVE_MAX = 2; // mm, whatever the length
+
+/**
+ * Bend the straight stretches of every interior crack into a gentle wave. Each stretch is
+ * pinned at both ends (crack junctions and tab bases), and a crack is a single shared
+ * line, so neighbouring pieces keep meeting exactly. A bent crack that would cross a line,
+ * or come closer to another than the allowed gap, stays straight.
+ */
+function waveEdges(p: ShatterParams, graph: ReturnType<typeof buildGraph>): Map<Edge, Pt[]> {
+  const straight = new Map<Edge, Pt[]>();
+  const w = p.waviness ?? 0;
+  if (w <= 0) return straight;
+  const rng = mulberry32(p.seed ^ 0x6a09e667);
+  const gap = Math.max(0.8, (p.minWidth ?? 0) + (p.kerf ?? 0));
+  const edges = [...graph.edges.values()];
+
+  // Edges bucketed by their bounding box, padded by the largest bend plus the gap.
+  const CELL = 8;
+  const pad = 2 * WAVE_MAX + gap;
+  const keysOf = (pl: Pt[]) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of pl) {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    }
+    const keys: string[] = [];
+    for (let i = Math.floor((x0 - pad) / CELL); i <= Math.floor((x1 + pad) / CELL); i++)
+      for (let j = Math.floor((y0 - pad) / CELL); j <= Math.floor((y1 + pad) / CELL); j++) keys.push(`${i},${j}`);
+    return keys;
+  };
+  const grid = new Map<string, number[]>();
+  edges.forEach((e, i) => {
+    for (const k of keysOf(e.poly)) {
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k)!.push(i);
+    }
+  });
+
+  const bend = (a: Pt, b: Pt): Pt[] => {
+    const L = dist(a, b);
+    // A smooth sum of a few half-waves, zero at both ends.
+    const c1 = rng() - 0.5;
+    const c2 = (rng() - 0.5) * 0.6;
+    const c3 = (rng() - 0.5) * 0.3;
+    const amp = Math.min(WAVE_MAX, w * WAVE_AMPLITUDE * L);
+    if (amp < 0.05) return [a, b];
+    const n = Math.min(30, Math.max(4, Math.ceil(L / WAVE_STEP)));
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const nx = -dy / L;
+    const ny = dx / L;
+    const pts: Pt[] = [a];
+    for (let i = 1; i < n; i++) {
+      const t = i / n;
+      const d = 2 * amp * (c1 * Math.sin(Math.PI * t) + c2 * Math.sin(2 * Math.PI * t) + c3 * Math.sin(3 * Math.PI * t));
+      pts.push([a[0] + t * dx + nx * d, a[1] + t * dy + ny * d]);
+    }
+    pts.push(b);
+    return pts;
+  };
+
+  const segsOf = (pl: Pt[]) => pl.slice(1).map((q, i) => [pl[i], q] as [Pt, Pt]);
+  const minDist = (x: [Pt, Pt][], y: [Pt, Pt][]) => {
+    let m = Infinity;
+    for (const [a0, a1] of x) for (const [b0, b1] of y) m = Math.min(m, segSegDist(a0, a1, b0, b1));
+    return m;
+  };
+
+  edges.forEach((e, i) => {
+    if (e.cells.length !== 2 || e.letter) return;
+    const old = e.poly;
+    // Straight stretches: the whole edge, or the parts either side of its tab.
+    const next =
+      old.length === 2
+        ? bend(old[0], old[1])
+        : [...bend(old[0], old[1]).slice(0, -1), ...old.slice(1, -1), ...bend(old[old.length - 2], old[old.length - 1]).slice(1)];
+    if (next.length === old.length) return;
+
+    const mine = segsOf(next);
+    // Must not cross its own tab.
+    for (let s = 0; s < mine.length; s++)
+      for (let t = s + 2; t < mine.length; t++)
+        if (segmentsIntersect(mine[s][0], mine[s][1], mine[t][0], mine[t][1])) return;
+
+    const near = new Set<number>();
+    for (const k of keysOf(next)) for (const j of grid.get(k) ?? []) if (j !== i) near.add(j);
+    for (const j of near) {
+      const o = edges[j];
+      const theirs = segsOf(o.poly);
+      const touching = o.a === e.a || o.a === e.b || o.b === e.a || o.b === e.b;
+      if (touching) {
+        // Edges meeting at a vertex only have to stay uncrossed.
+        for (const [a0, a1] of mine) for (const [b0, b1] of theirs) if (segmentsIntersect(a0, a1, b0, b1)) return;
+        continue;
+      }
+      const d = minDist(mine, theirs);
+      if (d >= gap) continue;
+      // Closer than the gap is only fine if the straight crack was already that close.
+      if (d < Math.min(gap, minDist(segsOf(old), theirs)) - 1e-9) return;
+    }
+    straight.set(e, old);
+    e.poly = next;
+  });
+  return straight;
 }
 
 // ---------------------------------------------------------------------------
