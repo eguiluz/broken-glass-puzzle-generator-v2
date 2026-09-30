@@ -1403,15 +1403,28 @@ export function shatter(p: ShatterParams): ShatterResult {
   // once if the count came out noticeably off.
   const outline = sheetOutline(p.shape ?? 'rect', p.width, p.height, p.cornerRadius ?? 0);
   const sow = Math.round(p.pieces / (Math.abs(signedArea(outline)) / (p.width * p.height)));
+  const near = (n: number) => Math.abs(n - p.pieces) <= 0.02 * p.pieces || n === 0;
+  if (p.extraImpacts?.length) {
+    // The count is settled once the crack graph exists: try sowing on the graph alone and
+    // run the costly finish (tabs, waves, fragile spots) only once, on the better one.
+    const first = crackGraph(p, sow);
+    const got = first.graph.cells.length;
+    if (near(got)) return shatterOnce(p, sow, first);
+    const sow2 = Math.round((sow * p.pieces) / got);
+    const second = crackGraph(p, sow2);
+    return Math.abs(second.graph.cells.length - p.pieces) < Math.abs(got - p.pieces)
+      ? shatterOnce(p, sow2, second)
+      : shatterOnce(p, sow, first);
+  }
   const first = shatterOnce(p, sow);
   const got = first.pieces.length;
-  if (Math.abs(got - p.pieces) <= 0.02 * p.pieces || got === 0) return first;
+  if (near(got)) return first;
   const second = shatterOnce(p, Math.round((sow * p.pieces) / got));
   return Math.abs(second.pieces.length - p.pieces) < Math.abs(got - p.pieces) ? second : first;
 }
 
-/** One pass of the generator; `sow` is how many cells to aim for in the whole box. */
-function shatterOnce(p: ShatterParams, sow: number): ShatterResult {
+/** Seeds and crack graph of one pass; `sow` is how many cells to aim for in the whole box. */
+function crackGraph(p: ShatterParams, sow: number) {
   const shaped = (p.shape ?? 'rect') !== 'rect';
   const outline = sheetOutline(p.shape ?? 'rect', p.width, p.height, p.cornerRadius ?? 0);
   const { seeds: sown, groups, layer: sownLayer, fixed } = seedsForCount(sow === p.pieces ? p : { ...p, pieces: sow });
@@ -1445,6 +1458,12 @@ function shatterOnce(p: ShatterParams, sow: number): ShatterResult {
         }
       : undefined,
   );
+  return { graph, outline, shaped };
+}
+
+/** One pass of the generator, finishing the crack graph (built here unless given). */
+function shatterOnce(p: ShatterParams, sow: number, built = crackGraph(p, sow)): ShatterResult {
+  const { graph, outline, shaped } = built;
   const tabCount = addTabs(p, graph, mulberry32(p.seed ^ 0x51ed270b));
   const straight = waveEdges(p, graph);
 
@@ -1577,11 +1596,46 @@ function waveEdges(p: ShatterParams, graph: ReturnType<typeof buildGraph>): Map<
     return pts;
   };
 
-  const segsOf = (pl: Pt[]) => pl.slice(1).map((q, i) => [pl[i], q] as [Pt, Pt]);
-  const minDist = (x: [Pt, Pt][], y: [Pt, Pt][]) => {
+  // Segments with their bounding boxes, so distant pairs are skipped without measuring.
+  type Seg = { a: Pt; b: Pt; x0: number; y0: number; x1: number; y1: number };
+  type Segs = { list: Seg[]; x0: number; y0: number; x1: number; y1: number };
+  const segsOf = (pl: Pt[]): Segs => {
+    const list = pl.slice(1).map((q, i) => {
+      const a = pl[i];
+      return { a, b: q, x0: Math.min(a[0], q[0]), y0: Math.min(a[1], q[1]), x1: Math.max(a[0], q[0]), y1: Math.max(a[1], q[1]) };
+    });
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const g of list) {
+      x0 = Math.min(x0, g.x0);
+      y0 = Math.min(y0, g.y0);
+      x1 = Math.max(x1, g.x1);
+      y1 = Math.max(y1, g.y1);
+    }
+    return { list, x0, y0, x1, y1 };
+  };
+  const boxGap = (a: { x0: number; y0: number; x1: number; y1: number }, b: typeof a) =>
+    Math.hypot(Math.max(0, b.x0 - a.x1, a.x0 - b.x1), Math.max(0, b.y0 - a.y1, a.y0 - b.y1));
+  const theirSegs = new Map<Pt[], Segs>();
+  const cached = (pl: Pt[]) => {
+    let v = theirSegs.get(pl);
+    if (!v) theirSegs.set(pl, (v = segsOf(pl)));
+    return v;
+  };
+  /** Smallest distance between two polylines, exact whenever it is below `limit`. */
+  const minDist = (x: Segs, y: Segs, limit: number) => {
     let m = Infinity;
-    for (const [a0, a1] of x) for (const [b0, b1] of y) m = Math.min(m, segSegDist(a0, a1, b0, b1));
+    if (boxGap(x, y) >= limit) return m;
+    for (const g of x.list) {
+      if (boxGap(g, y) >= Math.min(limit, m)) continue;
+      for (const h of y.list) if (boxGap(g, h) < Math.min(limit, m)) m = Math.min(m, segSegDist(g.a, g.b, h.a, h.b));
+    }
     return m;
+  };
+  const crosses = (x: Segs, y: Segs) => {
+    if (boxGap(x, y) > 0) return false;
+    for (const g of x.list)
+      for (const h of y.list) if (boxGap(g, h) === 0 && segmentsIntersect(g.a, g.b, h.a, h.b)) return true;
+    return false;
   };
 
   edges.forEach((e, i) => {
@@ -1596,25 +1650,25 @@ function waveEdges(p: ShatterParams, graph: ReturnType<typeof buildGraph>): Map<
 
     const mine = segsOf(next);
     // Must not cross its own tab.
-    for (let s = 0; s < mine.length; s++)
-      for (let t = s + 2; t < mine.length; t++)
-        if (segmentsIntersect(mine[s][0], mine[s][1], mine[t][0], mine[t][1])) return;
+    const ml = mine.list;
+    for (let s = 0; s < ml.length; s++)
+      for (let t = s + 2; t < ml.length; t++) if (segmentsIntersect(ml[s].a, ml[s].b, ml[t].a, ml[t].b)) return;
 
     const near = new Set<number>();
     for (const k of keysOf(next)) for (const j of grid.get(k) ?? []) if (j !== i) near.add(j);
     for (const j of near) {
       const o = edges[j];
-      const theirs = segsOf(o.poly);
+      const theirs = cached(o.poly);
       const touching = o.a === e.a || o.a === e.b || o.b === e.a || o.b === e.b;
       if (touching) {
         // Edges meeting at a vertex only have to stay uncrossed.
-        for (const [a0, a1] of mine) for (const [b0, b1] of theirs) if (segmentsIntersect(a0, a1, b0, b1)) return;
+        if (crosses(mine, theirs)) return;
         continue;
       }
-      const d = minDist(mine, theirs);
+      const d = minDist(mine, theirs, gap);
       if (d >= gap) continue;
       // Closer than the gap is only fine if the straight crack was already that close.
-      if (d < Math.min(gap, minDist(segsOf(old), theirs)) - 1e-9) return;
+      if (d < Math.min(gap, minDist(segsOf(old), theirs, gap)) - 1e-9) return;
     }
     straight.set(e, old);
     e.poly = next;
@@ -1738,6 +1792,15 @@ function findFragile(pieces: Pt[][], holes: Pt[][][], kerf: number, minWidth: nu
     };
     const total = Math.abs(signedArea(pl));
     if (total >= 2 * minPart) {
+      // Prefix sums of the shoelace terms: the area on one side of a crossing in O(1), to
+      // throw out most candidates before the costlier exact checks.
+      const pre = [0];
+      for (let k = 0; k < n; k++) {
+        const P = pl[k];
+        const Q = pl[(k + 1) % n];
+        pre.push(pre[k] + P[0] * Q[1] - Q[0] * P[1]);
+      }
+      const crossT = (P: Pt, Q: Pt) => P[0] * Q[1] - Q[0] * P[1];
       for (let i = 0; i < n; i++) {
         const a0 = pl[i];
         const a1 = pl[(i + 1) % n];
@@ -1751,11 +1814,15 @@ function findFragile(pieces: Pt[][], holes: Pt[][][], kerf: number, minWidth: nu
           if (Math.max(b0[1], b1[1]) < ay0 || Math.min(b0[1], b1[1]) > ay1) continue;
           const { p, q, d } = closestPoints(a0, a1, b0, b1);
           if (d >= limit || d < 1e-9) continue;
-          const mid: Pt = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
-          if (!pointInPolygon(mid, pl)) continue; // a gap across the outside, not material
-          // Area on one side of the crossing: p → vertices i+1..j → q.
+          // Area on one side of the crossing: p → vertices i+1..j → q. The quick estimate
+          // only rejects with a safety margin; anything close is measured exactly.
+          const quick =
+            Math.abs(crossT(p, pl[i + 1]) + (pre[j] - pre[i + 1]) + crossT(pl[j], q) + crossT(q, p)) / 2;
+          if (Math.min(quick, total - quick) < minPart * 0.99 - 1e-6) continue;
           const part = Math.abs(signedArea([p, ...pl.slice(i + 1, j + 1), q]));
           if (Math.min(part, total - part) < minPart) continue;
+          const mid: Pt = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+          if (!pointInPolygon(mid, pl)) continue; // a gap across the outside, not material
           consider(mid, d);
         }
       }
